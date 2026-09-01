@@ -13,3 +13,10 @@ __pycache__/
 Thumbs.db
 
 *.log
+# Service account keys / credentials
+secrets/
+*service-account*.json
+*credentials*.json
+
+# Generated data profile - contains real client data (state values, KPI stats)
+docs/data_profile.md
