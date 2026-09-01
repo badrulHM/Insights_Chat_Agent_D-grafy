@@ -1,15 +1,24 @@
+# Environment & Secrets
 .env
-.venv/
-venv/
-__pycache__/
-*.pyc
+.env.*
+*.json
+service-account*.json
+credentials/
 
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Streamlit
 .streamlit/secrets.toml
 
+# IDE & OS
 .vscode/
 .idea/
-
 .DS_Store
-Thumbs.db
-
-*.log
