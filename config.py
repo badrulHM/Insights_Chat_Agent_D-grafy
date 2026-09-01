@@ -70,6 +70,12 @@ class Settings:
     gemini_model: str = field(
         default_factory=lambda: _env_str("GEMINI_MODEL", "gemini-2.5-flash-lite")
     )
+    # Keep this low: the client retries 404s and other permanent errors, so a
+    # wrong model name otherwise costs a full exponential backoff ladder before
+    # it reports anything. 2 still absorbs a transient blip or a 429.
+    gemini_max_retries: int = field(
+        default_factory=lambda: _env_int("GEMINI_MAX_RETRIES", 2)
+    )
 
     # LangSmith
     langchain_tracing: bool = field(

@@ -14,8 +14,8 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from agent.sql_agent import get_agent
-from agent.tools import extract_sql
+from agent.sql_agent import RECURSION_LIMIT, get_agent
+from agent.tools import extract_sql, message_text
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -75,14 +75,19 @@ def ask(question, user_id=None, tier=None):
     # Tags and metadata show up in LangSmith, so a trace can be traced back to
     # the user and tier that produced it (spec 6.1).
     run_config = {
-        "tags": [tag for tag in ["dgrafy-insight-agent", tier] if tag],
+        "tags": [tag for tag in ["insight-agent", tier] if tag],
         "metadata": {"user_id": user_id or "anonymous", "tier": tier or "unknown"},
         "run_name": "insight-agent-question",
+        # LangGraph's loop guard - stops a confused agent hammering BigQuery.
+        "recursion_limit": RECURSION_LIMIT,
     }
 
     try:
         agent = get_agent()
-        raw = agent.invoke({"input": question}, config=run_config)
+        raw = agent.invoke(
+            {"messages": [{"role": "user", "content": question}]},
+            config=run_config,
+        )
     except Exception as exc:
         elapsed = time.perf_counter() - started
         logger.exception("Agent failed for question: %s", question)
@@ -97,9 +102,11 @@ def ask(question, user_id=None, tier=None):
 
     elapsed = time.perf_counter() - started
 
-    if isinstance(raw, dict):
-        answer = raw.get("output") or ""
-        sql = extract_sql(raw.get("intermediate_steps"))
+    messages = raw.get("messages") if isinstance(raw, dict) else None
+
+    if messages:
+        answer = message_text(messages[-1].content).strip()
+        sql = extract_sql(messages)
     else:
         answer = str(raw)
         sql = None

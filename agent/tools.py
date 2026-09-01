@@ -40,31 +40,48 @@ def _format_cell(value):
     return str(value)
 
 
-def extract_sql(intermediate_steps):
+def message_text(content):
+    """Flatten LangChain 1.x message content to plain text.
+
+    Content may be a string or a list of typed blocks (text, reasoning, ...).
+    """
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        parts = []
+
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+
+        return "".join(parts)
+
+    return str(content or "")
+
+
+def extract_sql(messages):
     """Pull the last SQL statement the agent actually executed.
 
-    `intermediate_steps` is a list of (AgentAction, observation) pairs. The
-    query-execution tool is the one whose input is the SQL string.
+    Walks the LangGraph message list for tool calls to the query tool. The
+    query *checker* is skipped - it only echoes a candidate back, so taking it
+    would report SQL that may never have run.
     """
     sql = None
 
-    for step in intermediate_steps or []:
-        action = step[0] if isinstance(step, (list, tuple)) else None
+    for message in messages or []:
+        for call in getattr(message, "tool_calls", None) or []:
+            name = (call.get("name") or "").lower()
 
-        if action is None:
-            continue
+            if "query" not in name or "checker" in name:
+                continue
 
-        tool = getattr(action, "tool", "") or ""
+            args = call.get("args") or {}
+            candidate = args.get("query") or args.get("__arg1")
 
-        if "query" not in tool.lower() or "checker" in tool.lower():
-            continue
-
-        tool_input = getattr(action, "tool_input", None)
-
-        if isinstance(tool_input, dict):
-            tool_input = tool_input.get("query") or tool_input.get("__arg1")
-
-        if isinstance(tool_input, str) and tool_input.strip():
-            sql = tool_input.strip()
+            if isinstance(candidate, str) and candidate.strip():
+                sql = candidate.strip()
 
     return sql

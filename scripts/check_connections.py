@@ -96,8 +96,11 @@ def check_gemini():
         llm = build_llm()
         reply = llm.invoke("Reply with the single word: connected")
 
+        # LangChain 1.x content may be typed blocks, not a bare string.
+        from agent.tools import message_text
+
         print(f"  Model: {settings.gemini_model}")
-        print(f"  Reply: {str(reply.content).strip()[:80]}")
+        print(f"  Reply: {message_text(reply.content).strip()[:80]}")
         print(f"{PASS} Gemini responding.")
         return True
     except Exception as exc:

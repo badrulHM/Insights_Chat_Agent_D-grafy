@@ -1,16 +1,23 @@
 """LangChain SQL agent wiring (spec 5.2).
 
 Builds the three pieces the agent needs - a SQLDatabase pointed at the
-configured master view, a Gemini chat model, and the agent executor that ties
-them together - and caches them so Streamlit reruns don't rebuild on every keystroke.
+configured master view, a Gemini chat model, and the agent that ties them
+together - and caches them so Streamlit reruns don't rebuild on every keystroke.
+
 """
 
-from langchain_community.agent_toolkits import create_sql_agent
+from langchain.agents import create_agent
+from langchain_community.agent_toolkits import SQLDatabaseToolkit
 from langchain_community.utilities import SQLDatabase
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from agent.prompts import FEW_SHOT_PREFIX
+from agent.prompts import FEW_SHOT_PREFIX, build_system_prefix
 from config import settings
+
+# Stop a confused agent looping against BigQuery. LangGraph counts every node
+# visit, and one agent step is roughly two of them, so leave headroom.
+MAX_AGENT_STEPS = 8
+RECURSION_LIMIT = 2 * MAX_AGENT_STEPS + 1
 
 _agent = None
 _db = None
@@ -56,44 +63,42 @@ def build_llm():
         # Deterministic output - we want the same question to produce the same
         # SQL, which also makes the golden-dataset eval meaningful.
         temperature=0,
+        max_retries=settings.gemini_max_retries,
     )
 
 
-def create_insight_agent(verbose=True, include_examples=True):
-    """Build a fresh SQL agent executor."""
+def build_system_prompt(prefix, dialect):
+    """Resolve the {dialect}/{top_k} placeholders in the prompt prefix.
 
+    `create_agent` takes the system prompt as a plain string and does no
+    formatting of its own, so we do it here.
+    """
+    return prefix.format(dialect=dialect, top_k=settings.max_result_rows)
+
+
+def create_insight_agent(include_examples=True):
+    """Build a fresh SQL agent."""
+    # LangSmith tracing is opt-in via .env; do it here so every agent run is
+    # traced no matter which entry point built the agent (spec 6.1).
     settings.apply_langsmith_env()
-
-    from agent.prompts import build_system_prefix
 
     prefix = FEW_SHOT_PREFIX if include_examples else build_system_prefix(False)
 
-    return create_sql_agent(
-        llm=build_llm(),
-        db=get_db(),
-        # "tool-calling" is the provider-neutral equivalent and is the correct choice for a Gemini model.
-        agent_type="tool-calling",
-        prefix=prefix,
-        # Fills the {top_k} placeholder in the prefix and caps the
-        # toolkit's own row suggestions at the same number.
-        top_k=settings.max_result_rows,
-        verbose=verbose,
-        # Stop a confused agent from looping against BigQuery indefinitely.
-        max_iterations=8,
-        max_execution_time=settings.query_timeout_seconds,
-        # NOTE: create_sql_agent only forwards these two to the AgentExecutor
-        # via agent_executor_kwargs - passed as top-level kwargs they are
-        # silently swallowed and intermediate steps come back empty.
-        agent_executor_kwargs={
-            # Surfaces the generated SQL to the service layer for eval/logging.
-            "return_intermediate_steps": True,
-            "handle_parsing_errors": True,
-        },
+    db = get_db()
+    llm = build_llm()
+
+    return create_agent(
+        model=llm,
+        # The standard SQL toolkit: list tables, get schema, check query, run
+        # query. Scoped to the one view `build_db` exposes.
+        tools=SQLDatabaseToolkit(db=db, llm=llm).get_tools(),
+        system_prompt=build_system_prompt(prefix, db.dialect),
+        name="insight-agent",
     )
 
 
 def get_agent():
-    """Return the shared agent executor, building it on first use."""
+    """Return the shared agent, building it on first use."""
     global _agent
 
     if _agent is None:

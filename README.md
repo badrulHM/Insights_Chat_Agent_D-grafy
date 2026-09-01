@@ -119,8 +119,11 @@ it, so adding a KPI alias means editing one file.
 
 Built and verified:
 - Project structure, `.gitignore` (`.env`, `.venv/`, `secrets/` all ignored)
-- Dependencies pinned to the LangChain **0.3** line - 1.x reworked the agent
-  APIs and breaks `create_sql_agent` as written in the spec
+- Built on **LangChain 1.x** (`create_agent`). The spec's 0.3-era
+  `create_sql_agent` is unusable with current Gemini models:
+  langchain-google-genai 2.1.x drops Gemini's `thought_signature`, so replaying
+  a tool call fails with `400 Function call is missing a thought_signature` -
+  which breaks every agent run, since each needs 2+ turns
 - Env-driven config layer with redacted diagnostics; a local `.env` overrides
   ambient shell variables so a stray `GOOGLE_APPLICATION_CREDENTIALS` from
   another project cannot hijack the connection
@@ -131,8 +134,9 @@ Built and verified:
   come from `.env` only - there are no defaults in code, and diagnostic output
   masks them
 - Data dictionary module driving both the prompt and the eval harness
-- LangChain SQL agent wired to Gemini - assembles cleanly, exposes the four
-  SQL tools, and returns intermediate steps so the generated SQL is capturable
+- LangChain SQL agent wired to Gemini - **verified end to end**: natural
+  language in, correct SQL generated, executed against BigQuery, prose answer
+  out, with the SQL captured for eval
 - Application layer `agent.service.ask()` - verified it never raises, and
   attaches user/tier metadata to every LangSmith trace
 - Streamlit app boots headless and serves (HTTP 200)
@@ -145,7 +149,10 @@ these checks cannot go green until the keys land:
 - LangSmith API key
 
 Next (Week 2):
-- Run `python -m scripts.explore_master_view` and correct the state literals in
-  `agent/prompts.py` if the column holds abbreviations rather than full names
+- State literals **confirmed**: `state = 'Victoria'` returns rows, so the
+  few-shot examples' full-name spelling is correct as written
+- Filter out non-geographic SA2s (`Migratory - Offshore - Shipping`,
+  `No usual address`) - they currently top diversity rankings and make answers
+  look wrong
 - Expand to 5-10 tuned few-shot examples
 - Implement RBAC tier lookup in `auth/` (limits already in `db/schema.py`)

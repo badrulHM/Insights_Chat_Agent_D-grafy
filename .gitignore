@@ -15,6 +15,7 @@ Thumbs.db
 *.log
 # Service account keys / credentials
 secrets/
+.secrets/
 *service-account*.json
 *credentials*.json
 
