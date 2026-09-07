@@ -14,6 +14,8 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+from langchain_core.tracers.context import collect_runs
+
 from agent.sql_agent import RECURSION_LIMIT, get_agent
 from agent.tools import extract_sql, message_text
 from config import settings
@@ -30,8 +32,14 @@ class AgentAnswer:
     sql: str = None
     ok: bool = True
     error: str = None
+    # Stable failure code the UI can branch on; None when ok.
+    reason: str = None
     elapsed_seconds: float = 0.0
+    # Local correlation id, always present - useful in app logs.
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    # LangSmith identifiers, present only when tracing is enabled.
+    trace_id: str = None
+    trace_url: str = None
 
     def as_dict(self):
         return {
@@ -40,18 +48,96 @@ class AgentAnswer:
             "sql": self.sql,
             "ok": self.ok,
             "error": self.error,
+            "reason": self.reason,
             "elapsed_seconds": round(self.elapsed_seconds, 2),
             "run_id": self.run_id,
+            "trace_id": self.trace_id,
+            "trace_url": self.trace_url,
         }
 
 
 # Shown to the user instead of a stack trace. The real error is logged and
 # traced in LangSmith.
-FRIENDLY_ERROR = (
-    "Sorry - I couldn't answer that one. Try rephrasing it, or naming the "
-    "state and the metric explicitly (for example: \"average prosperity score "
-    "in New South Wales\")."
-)
+# These messages must be honest about WHOSE problem it is. 
+ERROR_MESSAGES = {
+    "rate_limited": (
+        "The service is handling too many requests right now. Wait a few "
+        "seconds and ask again - your question was fine."
+    ),
+    "model_unavailable": (
+        "The AI model is currently unavailable. This is a configuration "
+        "problem on our side, not your question. Please tell the team."
+    ),
+    "data_unavailable": (
+        "I couldn't reach the demographic database just now. Please try "
+        "again shortly - your question was fine."
+    ),
+    "too_complex": (
+        "That question needed more steps than I'm allowed to take. Try "
+        "splitting it into two simpler questions."
+    ),
+    "no_answer": (
+        "I ran the query but couldn't turn the result into an answer. Try "
+        "asking for a specific metric and area, e.g. \"average prosperity "
+        "score in New South Wales\"."
+    ),
+    "unknown": (
+        "Something went wrong on our side and I couldn't answer that. "
+        "Please try again - if it keeps happening, tell the team."
+    ),
+}
+
+# Backwards-compatible default for callers that referenced the old constant.
+FRIENDLY_ERROR = ERROR_MESSAGES["unknown"]
+
+
+def classify_error(exc):
+    """Map an exception to a (reason, user-facing message) pair.
+
+    The reason is a stable code the UI can branch on (e.g. to show a retry
+    button for `rate_limited` but not for `model_unavailable`).
+    """
+    text = f"{type(exc).__name__} {exc}".lower()
+
+    if any(t in text for t in ("resource_exhausted", "429", "quota", "rate limit")):
+        reason = "rate_limited"
+    elif "recursion" in text or "iteration" in text:
+        reason = "too_complex"
+    elif "not_found" in text or "404" in text:
+        reason = "model_unavailable"
+    elif any(t in text for t in ("bigquery", "forbidden", "403", "denied",
+                                 "notfound: 404 table", "google.api_core")):
+        reason = "data_unavailable"
+    else:
+        reason = "unknown"
+
+    return reason, ERROR_MESSAGES[reason]
+
+
+def _trace_links(collected):
+    """Return (run_id, run_url) for the root run LangSmith just recorded.
+
+    Best effort: tracing is optional, and a LangSmith outage must never turn a
+    good answer into an error. Any failure yields (None, None).
+    """
+    runs = getattr(collected, "traced_runs", None)
+
+    if not runs:
+        return None, None
+
+    run = runs[0]
+    run_id = str(getattr(run, "id", "") or "") or None
+    run_url = None
+
+    if run_id and tracing_enabled():
+        try:
+            from langsmith import Client
+
+            run_url = Client().get_run_url(run=run)
+        except Exception:
+            logger.debug("Could not build LangSmith run URL", exc_info=True)
+
+    return run_id, run_url
 
 
 def ask(question, user_id=None, tier=None):
@@ -82,21 +168,35 @@ def ask(question, user_id=None, tier=None):
         "recursion_limit": RECURSION_LIMIT,
     }
 
+    trace_id = None
+    trace_url = None
+
     try:
         agent = get_agent()
-        raw = agent.invoke(
-            {"messages": [{"role": "user", "content": question}]},
-            config=run_config,
-        )
+
+        # collect_runs captures the root run so we can link straight to this
+        # question's trace in LangSmith (spec 6.1). Cheap no-op when tracing
+        # is off, so there is no need to branch on it here.
+        with collect_runs() as collected:
+            raw = agent.invoke(
+                {"messages": [{"role": "user", "content": question}]},
+                config=run_config,
+            )
+
+        trace_id, trace_url = _trace_links(collected)
     except Exception as exc:
         elapsed = time.perf_counter() - started
-        logger.exception("Agent failed for question: %s", question)
+        reason, message = classify_error(exc)
+        logger.exception(
+            "Agent failed (%s) for question: %s", reason, question
+        )
 
         return AgentAnswer(
             question=question,
-            answer=FRIENDLY_ERROR,
+            answer=message,
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
+            reason=reason,
             elapsed_seconds=elapsed,
         )
 
@@ -117,10 +217,13 @@ def ask(question, user_id=None, tier=None):
 
     return AgentAnswer(
         question=question,
-        answer=answer or FRIENDLY_ERROR,
+        answer=answer or ERROR_MESSAGES["no_answer"],
         sql=sql,
         ok=bool(answer),
+        reason=None if answer else "no_answer",
         elapsed_seconds=elapsed,
+        trace_id=trace_id,
+        trace_url=trace_url,
     )
 
 
@@ -141,3 +244,12 @@ def warm_up():
 def tracing_enabled():
     """True if LangSmith tracing is configured (surface this in the UI/dev tools)."""
     return bool(settings.langchain_tracing and settings.langchain_api_key)
+
+
+def tracing_status():
+    """Everything the UI or a dev tool needs to show tracing state."""
+    return {
+        "enabled": tracing_enabled(),
+        "project": settings.langchain_project,
+        "dashboard_url": settings.langsmith_project_url,
+    }
