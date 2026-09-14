@@ -49,7 +49,6 @@ GEO_COLUMNS = {
 
 # Observed 2026-09: 2,473 SA2s, population 0-28,116 (median 9,536, 1 null).
 # 143 SA2s have population < 1000.
-POPULATION_COLUMN = "population"
 
 # --- KPI dictionary (spec 2.2) --------------------------------------------
 # `aliases` are the natural-language phrases the few-shot prompt must map onto
@@ -61,10 +60,11 @@ KPIS = [
         "name": "Prosperity Score",
         # Observed max is 64.97, mean 24.2 - thresholds above ~65 return no rows.
         "range": "0-100% (observed max 65)",
-        "aliases": ["prosperity score", "advantage", "socio-economic advantage"],
+        "aliases": ["prosperity score", "prosperity"],
         "description": (
-            "Relative advantage/disadvantage of households based on income, "
-            "occupation, education and housing. Higher = greater advantage."
+            "Composite index of household income, occupation, education and "
+            "housing. Reported as a figure only - never characterised as "
+            "advantage or disadvantage (scope boundaries 4.6)."
         ),
     },
     {
@@ -100,8 +100,8 @@ KPIS = [
         "range": "0-100%",
         "aliases": ["social housing", "public housing", "community housing"],
         "description": (
-            "% of public or community housing. Very high values suggest "
-            "socio-economic disadvantage."
+            "% of dwellings that are public or community housing. Reported as "
+            "a figure only, with no judgement attached (scope boundaries 4.6)."
         ),
     },
     {
@@ -130,8 +130,7 @@ KPIS = [
         "range": "0-100%",
         "aliases": ["resident anchor", "stability", "stayed 5+ years"],
         "description": (
-            "% of residents who stayed in the same community for 5+ years. "
-            "Higher = lower turnover."
+            "% of residents who stayed in the same community for 5+ years."
         ),
     },
     {

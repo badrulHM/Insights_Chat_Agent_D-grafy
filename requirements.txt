@@ -1,5 +1,8 @@
 # --- Core app ---
 streamlit>=1.40.0
+# Charts: scope boundaries section 9 permits st.bar_chart, st.pyplot or
+# st.plotly_chart only. Plotly is the one of those that lets us pin bar order.
+plotly>=5.24.0
 python-dotenv>=1.0.1
 
 # --- Data / BigQuery ---

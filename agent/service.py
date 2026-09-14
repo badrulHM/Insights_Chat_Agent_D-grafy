@@ -16,7 +16,10 @@ from dataclasses import dataclass, field
 
 from langchain_core.tracers.context import collect_runs
 
+from agent.charts import suggest_chart
+from agent.safe_tools import AGENT_ALLOWED_TABLES, get_cached_rows
 from agent.sql_agent import RECURSION_LIMIT, get_agent
+from db.bigquery_client import run_query
 from agent.tools import extract_sql, message_text
 from config import settings
 
@@ -34,6 +37,9 @@ class AgentAnswer:
     error: str = None
     # Stable failure code the UI can branch on; None when ok.
     reason: str = None
+    # Result rows and a chart suggestion, populated when with_data=True.
+    rows: list = None
+    chart: object = None
     elapsed_seconds: float = 0.0
     # Local correlation id, always present - useful in app logs.
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -49,6 +55,8 @@ class AgentAnswer:
             "ok": self.ok,
             "error": self.error,
             "reason": self.reason,
+            "row_count": len(self.rows) if self.rows is not None else None,
+            "chart": self.chart.as_dict() if self.chart else None,
             "elapsed_seconds": round(self.elapsed_seconds, 2),
             "run_id": self.run_id,
             "trace_id": self.trace_id,
@@ -86,9 +94,6 @@ ERROR_MESSAGES = {
         "Please try again - if it keeps happening, tell the team."
     ),
 }
-
-# Backwards-compatible default for callers that referenced the old constant.
-FRIENDLY_ERROR = ERROR_MESSAGES["unknown"]
 
 
 def classify_error(exc):
@@ -140,7 +145,36 @@ def _trace_links(collected):
     return run_id, run_url
 
 
-def ask(question, user_id=None, tier=None):
+def fetch_result_data(sql, question=None):
+    """Get the rows behind an answer, plus a chart suggestion.
+
+    Normally free: the guarded query tool already cached the rows it fetched
+    during the agent run, so there is no second BigQuery job. Reusing those
+    exact rows also guarantees the chart agrees with the text - re-running
+    could return different data than the answer describes.
+
+    Falls back to re-executing only if the cache missed (evicted, or the agent
+    answered from conversation rather than a fresh query).
+    Returns (rows, chart_spec); never raises.
+    """
+    if not sql:
+        return None, None
+
+    rows = get_cached_rows(sql)
+
+    if rows is None:
+        logger.debug("Chart data cache miss; re-running SQL")
+
+        try:
+            rows = run_query(sql, allowed_tables=AGENT_ALLOWED_TABLES)
+        except Exception:
+            logger.debug("Could not re-run SQL for chart data", exc_info=True)
+            return None, None
+
+    return rows, suggest_chart(rows, question)
+
+
+def ask(question, user_id=None, tier=None, with_data=False):
     """Run one question through the agent and return an AgentAnswer.
 
     Never raises: any failure comes back as `ok=False` with a friendly message,
@@ -211,6 +245,12 @@ def ask(question, user_id=None, tier=None):
         answer = str(raw)
         sql = None
 
+    rows = None
+    chart = None
+
+    if with_data and sql:
+        rows, chart = fetch_result_data(sql, question)
+
     logger.info(
         "question=%r elapsed=%.2fs sql=%r", question, elapsed, (sql or "")[:200]
     )
@@ -224,21 +264,9 @@ def ask(question, user_id=None, tier=None):
         elapsed_seconds=elapsed,
         trace_id=trace_id,
         trace_url=trace_url,
+        rows=rows,
+        chart=chart,
     )
-
-
-def warm_up():
-    """Build the agent ahead of the first question.
-
-    Schema introspection and the BigQuery handshake take a few seconds; calling
-    this once at app start keeps the first user question from paying for it.
-    """
-    try:
-        get_agent()
-        return True
-    except Exception:
-        logger.exception("Agent warm-up failed")
-        return False
 
 
 def tracing_enabled():

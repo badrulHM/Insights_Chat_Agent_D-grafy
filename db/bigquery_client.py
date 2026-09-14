@@ -110,15 +110,32 @@ def referenced_tables(sql):
     return [name for name in found if name.lower() not in cte_names]
 
 
-def assert_allowed_tables(sql):
-    """Raise UnsafeQueryError if the query reaches outside the allowed tables."""
-    allowed_names = {table.split(".")[-1].lower() for table in ALLOWED_TABLES}
+def assert_allowed_tables(sql, allowed=None, require_qualified=False):
+    """Raise UnsafeQueryError if the query reaches outside the allowed tables.
+
+    `allowed` narrows the set for a specific caller. The LLM agent passes just
+    the master view, so agent-generated SQL can never touch customer records
+    even though the application itself is allowed to.
+
+    `require_qualified` enforces scope boundaries section 5: generated SQL must
+    use `project.dataset.table`, never a bare table name. Applied on the agent
+    path, where the model might otherwise emit a shorthand reference that only
+    resolves because of a default dataset.
+    """
+    allowed = allowed or ALLOWED_TABLES
+    allowed_names = {table.split(".")[-1].lower() for table in allowed}
 
     for table in referenced_tables(sql):
         if table.split(".")[-1].lower() not in allowed_names:
             raise UnsafeQueryError(
                 f"Table '{table}' is not in the allowed set: "
-                f"{', '.join(ALLOWED_TABLES)}"
+                f"{', '.join(allowed)}"
+            )
+
+        if require_qualified and table.count(".") != 2:
+            raise UnsafeQueryError(
+                f"Table '{table}' must be fully qualified as "
+                "project.dataset.table."
             )
 
     return True
@@ -168,7 +185,8 @@ def dry_run(query):
     return job.total_bytes_processed
 
 
-def run_query(query, max_rows=None, params=None):
+def run_query(query, max_rows=None, params=None, allowed_tables=None,
+              require_qualified=False):
     """Execute a read-only query and return the rows as a list of dicts.
 
     `max_rows` defaults to MAX_RESULT_ROWS so a runaway query can never pull
@@ -176,7 +194,9 @@ def run_query(query, max_rows=None, params=None):
     BigQuery named parameters - always use it for anything user-supplied.
     """
     assert_read_only(query)
-    assert_allowed_tables(query)
+    assert_allowed_tables(
+        query, allowed=allowed_tables, require_qualified=require_qualified
+    )
 
     limit = max_rows or settings.max_result_rows
 

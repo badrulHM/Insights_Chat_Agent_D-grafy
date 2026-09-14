@@ -1,43 +1,8 @@
-"""Helpers for turning query results into readable text (spec 4.1).
+"""Helpers for reading what the agent produced.
 
-Text is the primary output. Chart rendering is a stretch goal (spec 4.2) and
-deliberately not started here.
+`message_text` flattens LangChain 1.x content blocks; `extract_sql` recovers
+the query the agent actually executed, for charting and evaluation.
 """
-
-
-def format_rows_as_markdown(rows, max_rows=25):
-    """Render a list of dict rows as a markdown table."""
-    if not rows:
-        return "_No matching rows._"
-
-    columns = list(rows[0].keys())
-    header = "| " + " | ".join(columns) + " |"
-    divider = "| " + " | ".join("---" for _ in columns) + " |"
-    lines = [header, divider]
-
-    for row in rows[:max_rows]:
-        cells = [_format_cell(row.get(column)) for column in columns]
-        lines.append("| " + " | ".join(cells) + " |")
-
-    if len(rows) > max_rows:
-        lines.append(f"\n_Showing {max_rows} of {len(rows)} rows._")
-
-    return "\n".join(lines)
-
-
-def _format_cell(value):
-    if value is None:
-        return "-"
-
-    if isinstance(value, float):
-        # The 0-1 KPIs (Diversity Index, Household Mobility) need more decimals
-        # than the 0-100% ones, or distinct suburbs render as the same number.
-        return f"{value:,.4f}" if abs(value) < 10 else f"{value:,.2f}"
-
-    if isinstance(value, int):
-        return f"{value:,}"
-
-    return str(value)
 
 
 def message_text(content):

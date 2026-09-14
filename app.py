@@ -1,11 +1,13 @@
 """Streamlit entry point.
 
 BACKEND NOTE: this is a thin harness that proves the backend pipeline works
-end to end (question -> Gemini -> SQL -> BigQuery -> text answer). Branding,
-the login screen, tier counters and chat styling belong to the Frontend role -
-this file is expected to be rebuilt on the Frontend branch.
+end to end (question -> Gemini -> SQL -> BigQuery -> text answer -> chart).
+Branding, the login screen, tier counters and chat styling belong to the
+Frontend role - this file is expected to be rebuilt on the Frontend branch.
 
-The only import the UI needs from the backend is `agent.service.ask`.
+The UI needs two things from the backend: `agent.service.ask` for the answer,
+and `ui_charts.build_chart` to draw the chart it suggests. RBAC is wired and
+tested in `auth/rbac.py` but is NOT surfaced here - see the README.
 """
 
 import streamlit as st
@@ -13,6 +15,7 @@ import streamlit as st
 from agent.service import ask, tracing_enabled
 from config import settings
 from db.bigquery_client import run_query
+from ui_charts import build_chart
 
 st.set_page_config(
     page_title="D'grafy Insight Agent",
@@ -40,9 +43,37 @@ with st.sidebar:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+def render_chart(chart):
+    """Draw whatever visual the backend chose, if it chose one.
+
+    The backend picks the form (bar, column, grouped, stacked or table); this
+    just dispatches. Text is always the primary answer, and a failure here
+    must never take the answer down with it.
+    """
+    if chart is None:
+        return
+
+    try:
+        if chart.is_table:
+            # Tables are explicitly permitted by scope section 9, and
+            # st.dataframe gives sorting and resizing for free.
+            st.dataframe(
+                chart.to_table_frame(), use_container_width=True, hide_index=True
+            )
+        else:
+            st.plotly_chart(
+                build_chart(chart),
+                use_container_width=True,
+                config={"displayModeBar": False},
+            )
+    except Exception:
+        st.caption("(chart unavailable for this result)")
+
+
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+        render_chart(message.get("chart"))
 
 question = st.chat_input("e.g. Top 3 most diverse suburbs in Victoria")
 
@@ -54,9 +85,12 @@ if question:
 
     with st.chat_message("assistant"):
         with st.spinner("Querying BigQuery..."):
-            result = ask(question)
+            # with_data=True returns the rows and a chart suggestion. It costs
+            # no extra BigQuery job - the rows are reused from the agent run.
+            result = ask(question, with_data=True)
 
         st.markdown(result.answer)
+        render_chart(result.chart)
 
         if show_sql and result.sql:
             st.code(result.sql, language="sql")
@@ -64,5 +98,9 @@ if question:
         st.caption(f"Answered in {result.elapsed_seconds:.1f}s")
 
     st.session_state.messages.append(
-        {"role": "assistant", "content": result.answer}
+        {
+            "role": "assistant",
+            "content": result.answer,
+            "chart": result.chart,
+        }
     )
