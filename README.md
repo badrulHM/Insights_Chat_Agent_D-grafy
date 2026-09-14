@@ -74,24 +74,34 @@ SQL.
 
 ```
 Insights_Chat_Agent_D-grafy/
-├── app.py                        # Streamlit entry point (thin; Frontend owns this)
-├── config.py                     # Env-driven settings, single source for secrets
+├── app.py                        # Streamlit entry point
+├── config.py                     # Environment-driven configuration and secrets
+│
 ├── agent/
-│   ├── service.py                # Application layer - the UI's only entry point
-│   ├── sql_agent.py              # LangChain agent + Gemini wiring
-│   ├── prompts.py                # System prompt + 10 few-shot examples
-│   └── tools.py                  # Result formatting, SQL extraction
+│   ├── service.py                # Application layer; UI entry point to the agent
+│   ├── sql_agent.py              # LangChain SQL agent + Gemini integration
+│   ├── prompts.py                # System prompt + few-shot examples
+│   └── tools.py                  # Result formatting and SQL extraction
+│
 ├── auth/
 │   ├── users.py                  # User lookup + ID validation
 │   └── rbac.py                   # Tier policy and question quotas
+│
 ├── db/
-│   ├── bigquery_client.py        # BigQuery wrapper + read-only guard
-│   └── schema.py                 # Data dictionary: tables, KPIs, tiers
-├── eval/                         # Golden dataset + LLM judge (Eval/QA teammate)
+│   ├── bigquery_client.py        # BigQuery access + read-only query controls
+│   └── schema.py                 # Demografy data dictionary and KPI mappings
+│
+├── eval/
+│   ├── golden_dataset.json       # 10-question Golden Dataset
+│   ├── judge.py                  # LLM-as-Judge scoring of agent responses
+│   └── run_eval.py               # Runs automated evaluation and reports results
+│
 ├── scripts/
-│   ├── check_connections.py      # 8-step smoke test
-│   └── explore_master_view.py    # Profiles the master view -> docs/data_profile.md
-└── docs/data_profile.md          # Generated data profile (gitignored)
+│   ├── check_connections.py      # Connection / configuration smoke test
+│   └── explore_master_view.py    # Profiles a_master_view
+│
+└── docs/
+    └── data_profile.md           # Generated data profile, gitignored
 ```
 
 ## Backend usage
@@ -182,6 +192,9 @@ The KPI mapping lives in `db/schema.py` and is the single source of truth.
 | `kpi_10_val` | Young Family Indicator | 0-100% |
 
 "Suburb" means SA2 area - `sa2_name` is the primary geographic filter.
+
+## Test plan
+https://github.com/badrulHM/Insights_Chat_Agent_D-grafy/blob/main/Demografy_Test_Plan.docx
 
 ### Findings that contradict the spec
 
