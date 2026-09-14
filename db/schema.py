@@ -42,7 +42,14 @@ GEO_COLUMNS = {
     "gcca_name": "Greater Capital City Area name (e.g. Greater Sydney)",
     "state": "Australian state/territory",
     "area": "Geographic area (sq km)",
+    # Present in the view but NOT in the spec's data dictionary (section 2.1).
+    # Essential: the spec's own example question filters on it.
+    "population": "Usual resident count for the SA2 (INTEGER)",
 }
+
+# Observed 2026-09: 2,473 SA2s, population 0-28,116 (median 9,536, 1 null).
+# 143 SA2s have population < 1000.
+POPULATION_COLUMN = "population"
 
 # --- KPI dictionary (spec 2.2) --------------------------------------------
 # `aliases` are the natural-language phrases the few-shot prompt must map onto
@@ -52,7 +59,8 @@ KPIS = [
     {
         "column": "kpi_1_val",
         "name": "Prosperity Score",
-        "range": "0-100%",
+        # Observed max is 64.97, mean 24.2 - thresholds above ~65 return no rows.
+        "range": "0-100% (observed max 65)",
         "aliases": ["prosperity score", "advantage", "socio-economic advantage"],
         "description": (
             "Relative advantage/disadvantage of households based on income, "
@@ -129,7 +137,9 @@ KPIS = [
     {
         "column": "kpi_9_val",
         "name": "Household Mobility Potential",
-        "range": "0-1",
+        # Spec 2.2 documents 0-1, but the column actually holds 7.23-100.
+        # Telling the model "0-1" makes it write thresholds that match nothing.
+        "range": "0-100 (spec says 0-1; the data disagrees)",
         "aliases": ["household mobility", "mobility potential"],
         "description": (
             "Proportion of households in transitional socioeconomic positions "
@@ -150,9 +160,32 @@ KPIS = [
 
 KPI_VALUE_COLUMNS = [kpi["column"] for kpi in KPIS]
 
-# kpi_1_ind .. kpi_8_ind are indicator/index versions (spec 2.2). Queryable,
-# but the _val columns are the primary metrics.
-KPI_INDICATOR_COLUMNS = [f"kpi_{n}_ind" for n in range(1, 9)]
+
+KPI_INDICATOR_COLUMNS = [f"kpi_{n}_ind" for n in range(1, 17)]
+
+# kpi_11..kpi_16 exist in the view with real values but are NOT in the spec's
+# data dictionary - we have no business definition for them. The agent is told
+# to refuse rather than guess what they measure. 
+UNDOCUMENTED_KPI_COLUMNS = [f"kpi_{n}_val" for n in range(11, 17)]
+
+# 18 rows are ABS bookkeeping areas, not real suburbs. They carry extreme KPI
+# values and otherwise dominate every ranking.
+EXCLUDED_SA2_REGEX = r"(?i)^(Migratory - Offshore - Shipping|No usual address)"
+
+# 'Other Territories' (6 SA2s) and 'Outside Australia' (1) are not real
+# states; exclude them from state-level comparisons.
+NON_STATE_VALUES = ("Other Territories", "Outside Australia")
+
+STATE_VALUES = (
+    "New South Wales",
+    "Queensland",
+    "Victoria",
+    "Western Australia",
+    "South Australia",
+    "Australian Capital Territory",
+    "Tasmania",
+    "Northern Territory",
+)
 
 # --- Customer table (spec 2.3) --------------------------------------------
 
@@ -165,7 +198,10 @@ CUSTOMER_COLUMNS = {
     "updated_at": "Last modified timestamp.",
 }
 
+# Spec 4.3: questions per session, and the count at which to warn the user.
 TIER_QUESTION_LIMITS = {"free": 5, "basic": 20, "pro": 50}
+TIER_WARN_AT = {"free": None, "basic": 15, "pro": 45}
+DEFAULT_TIER = "free"
 
 
 def kpi_mapping_lines():

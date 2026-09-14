@@ -68,7 +68,7 @@ class Settings:
     # Gemini
     gemini_api_key: str = field(default_factory=lambda: _env_str("GEMINI_API_KEY"))
     gemini_model: str = field(
-        default_factory=lambda: _env_str("GEMINI_MODEL", "gemini-2.5-flash-lite")
+        default_factory=lambda: _env_str("GEMINI_MODEL", "gemini-3.5-flash-lite")
     )
     # Keep this low: the client retries 404s and other permanent errors, so a
     # wrong model name otherwise costs a full exponential backoff ladder before
@@ -141,6 +141,17 @@ class Settings:
         os.environ["LANGCHAIN_API_KEY"] = self.langchain_api_key
         os.environ["LANGCHAIN_PROJECT"] = self.langchain_project
         return True
+
+    @property
+    def langsmith_project_url(self):
+        """Link to this project's LangSmith dashboard, or None if not traced."""
+        if not (self.langchain_tracing and self.langchain_api_key):
+            return None
+
+        return (
+            "https://smith.langchain.com/o/me/projects/p/"
+            f"{self.langchain_project}"
+        )
 
     def redacted(self):
         """Settings safe to print, screenshot or paste into a ticket.

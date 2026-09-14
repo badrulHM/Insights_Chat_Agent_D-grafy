@@ -120,8 +120,62 @@ def check_langsmith():
         return True
 
     settings.apply_langsmith_env()
-    print(f"{PASS} Tracing on, project '{settings.langchain_project}'.")
+
+    # Prove the key actually works rather than just that it is present.
+    try:
+        from langsmith import Client
+
+        client = Client(api_key=settings.langchain_api_key)
+        runs = list(
+            client.list_runs(project_name=settings.langchain_project, limit=1)
+        )
+        seen = f"{len(runs)} recent run(s) visible"
+    except Exception as exc:
+        print(f"{FAIL} LangSmith key rejected: {type(exc).__name__}: {exc}")
+        return False
+
+    print(f"{PASS} Tracing on, project '{settings.langchain_project}' ({seen}).")
+    print(f"  Dashboard: {settings.langsmith_project_url}")
     return True
+
+
+def check_rbac():
+    _header("8. RBAC / tier lookup")
+
+    try:
+        from auth.rbac import authenticate, check_quota
+        from db.bigquery_client import run_query
+        from db.schema import CUSTOMERS_TABLE
+
+        # Pick a live active user rather than hardcoding an ID.
+        rows = run_query(
+            f"SELECT user_id FROM {CUSTOMERS_TABLE} WHERE is_active = TRUE LIMIT 1",
+            max_rows=1,
+        )
+
+        if not rows:
+            print(f"{WARN} No active users in the customer table.")
+            return True
+
+        result = authenticate(rows[0]["user_id"])
+
+        if not result.ok:
+            print(f"{FAIL} Active user failed to authenticate: {result.error}")
+            return False
+
+        quota = check_quota(result.user.tier, 0)
+        print(f"  Authenticated tier '{result.user.tier}', limit {quota.limit}")
+
+        # An unknown ID must be rejected, not silently allowed.
+        if authenticate("definitely_not_a_real_user").ok:
+            print(f"{FAIL} Unknown user was authenticated.")
+            return False
+
+        print(f"{PASS} Tier lookup and rejection both behave correctly.")
+        return True
+    except Exception as exc:
+        print(f"{FAIL} {type(exc).__name__}: {exc}")
+        return False
 
 
 def check_agent():
@@ -153,6 +207,7 @@ def main():
         ("gemini", check_gemini),
         ("langsmith", check_langsmith),
         ("agent", check_agent),
+        ("rbac", check_rbac),
     ]
 
     results = {}

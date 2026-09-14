@@ -124,11 +124,38 @@ def assert_allowed_tables(sql):
     return True
 
 
-def _job_config(dry_run=False):
+def _to_query_parameters(params):
+    """Convert a {name: value} dict to BigQuery named query parameters.
+
+    Using real parameters rather than string interpolation is what makes the
+    customer lookup safe: `user_id` comes straight from user input, and a
+    parameter can never be parsed as SQL.
+    """
+    if not params:
+        return None
+
+    type_map = {bool: "BOOL", int: "INT64", float: "FLOAT64", str: "STRING"}
+    query_parameters = []
+
+    for name, value in params.items():
+        # bool before int - bool is a subclass of int in Python.
+        bq_type = next(
+            (t for python_type, t in type_map.items() if type(value) is python_type),
+            "STRING",
+        )
+        query_parameters.append(
+            bigquery.ScalarQueryParameter(name, bq_type, value)
+        )
+
+    return query_parameters
+
+
+def _job_config(dry_run=False, params=None):
     return bigquery.QueryJobConfig(
         dry_run=dry_run,
         use_query_cache=True,
         maximum_bytes_billed=settings.max_bytes_billed,
+        query_parameters=_to_query_parameters(params) or [],
     )
 
 
@@ -141,18 +168,19 @@ def dry_run(query):
     return job.total_bytes_processed
 
 
-def run_query(query, max_rows=None):
+def run_query(query, max_rows=None, params=None):
     """Execute a read-only query and return the rows as a list of dicts.
 
     `max_rows` defaults to MAX_RESULT_ROWS so a runaway query can never pull
-    the whole view into memory.
+    the whole view into memory. `params` is a {name: value} dict bound as
+    BigQuery named parameters - always use it for anything user-supplied.
     """
     assert_read_only(query)
     assert_allowed_tables(query)
 
     limit = max_rows or settings.max_result_rows
 
-    query_job = get_client().query(query, job_config=_job_config())
+    query_job = get_client().query(query, job_config=_job_config(params=params))
     results = query_job.result(
         max_results=limit, timeout=settings.query_timeout_seconds
     )
