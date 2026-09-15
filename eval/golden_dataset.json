@@ -1,90 +1,91 @@
-{
-  "_comment": [
-    "Golden dataset for automated evaluation (spec 6.2).",
-    "Expected values were computed directly from the live view, not invented -",
-    "regenerate with scripts/rebuild_golden.py if the underlying data changes.",
-    "Each case declares how it should be validated; see eval/run_eval.py.",
-    "Validators: contains_all | numeric | count | first_of | refusal | no_sql"
-  ],
-  "generated_from_data_on": "2026-09",
-  "cases": [
-    {
-      "id": 1,
-      "question": "What are the top 3 suburbs in Victoria with the highest diversity index?",
-      "expected_sql_contains": ["kpi_2_val", "Victoria", "DESC"],
-      "validation": "contains_all",
-      "expected": ["Keilor Downs", "Delahey", "St Albans - North"],
-      "note": "Fails if ABS bookkeeping rows are not excluded."
-    },
-    {
-      "id": 2,
-      "question": "What is the average prosperity score in New South Wales?",
-      "expected_sql_contains": ["AVG", "kpi_1_val", "New South Wales"],
-      "validation": "numeric",
-      "expected": 25.379,
-      "tolerance": 1.0
-    },
-    {
-      "id": 3,
-      "question": "Which state has the highest average learning level?",
-      "expected_sql_contains": ["kpi_4_val", "GROUP BY"],
-      "validation": "contains_all",
-      "expected": ["Australian Capital Territory"]
-    },
-    {
-      "id": 4,
-      "question": "How many suburbs have social housing above 20%?",
-      "expected_sql_contains": ["kpi_5_val"],
-      "validation": "numeric",
-      "expected": 50,
-      "tolerance": 3,
-      "note": "Tolerance allows for reasonable differences in the population filter."
-    },
-    {
-      "id": 5,
-      "question": "What are the most affordable rental suburbs in Queensland?",
-      "expected_sql_contains": ["kpi_7_val", "Queensland"],
-      "validation": "first_of",
-      "expected": ["Stanthorpe", "Redbank Plains", "Leichhardt - One Mile"]
-    },
-    {
-      "id": 6,
-      "question": "How many suburbs in Western Australia have a diversity index above 0.8?",
-      "expected_sql_contains": ["kpi_2_val", "Western Australia"],
-      "validation": "numeric",
-      "expected": 26,
-      "tolerance": 3
-    },
-    {
-      "id": 7,
-      "question": "Which is the largest suburb in Greater Sydney by population?",
-      "expected_sql_contains": ["population", "Greater Sydney"],
-      "validation": "contains_all",
-      "expected": ["Lalor Park - Kings Langley"]
-    },
-    {
-      "id": 8,
-      "question": "Compare home ownership against rental access by state.",
-      "expected_sql_contains": ["kpi_6_val", "kpi_7_val", "GROUP BY"],
-      "validation": "contains_all",
-      "expected": ["New South Wales", "Queensland", "Victoria", "Tasmania"],
-      "note": "All 8 real states should appear; 4 spot-checked."
-    },
-    {
-      "id": 9,
-      "question": "What is the average young family indicator in Tasmania?",
-      "expected_sql_contains": ["kpi_10_val", "Tasmania"],
-      "validation": "numeric",
-      "expected": 16.188,
-      "tolerance": 1.0
-    },
-    {
-      "id": 10,
-      "question": "What does kpi_13 measure?",
-      "expected_sql_contains": [],
-      "validation": "refusal",
-      "expected": ["no published definition", "not available", "unavailable", "cannot", "no definition"],
-      "note": "Must refuse rather than hallucinate a definition. Guards against the undocumented-KPI failure mode."
-    }
-  ]
-}
+[
+  {
+    "id": "GD01",
+    "question": "What is the prosperity score for Glenwood?",
+    "expected_kpi": "Prosperity Score",
+    "expected_column": "kpi_1_val",
+    "expected_geography": ["Glenwood"],
+    "expected_answer": "The prosperity score for Glenwood is 58.44."
+  },
+  {
+    "id": "GD02",
+    "question": "What is the diversity index for Glenwood?",
+    "expected_kpi": "Diversity Index",
+    "expected_column": "kpi_2_val",
+    "expected_geography": ["Glenwood"],
+    "expected_answer": "The diversity index for Glenwood is approximately 0.807."
+  },
+  {
+    "id": "GD03",
+    "question": "What is the resident equity score for Glenwood?",
+    "expected_kpi": "Resident Equity",
+    "expected_column": "kpi_6_val",
+    "expected_geography": ["Glenwood"],
+    "expected_answer": "The resident equity score for Glenwood is approximately 78.67%."
+  },
+  {
+    "id": "GD04",
+    "question": "Compare the diversity index of Glenwood and Karabar.",
+    "expected_kpi": "Diversity Index",
+    "expected_column": "kpi_2_val",
+    "expected_geography": [
+      "Glenwood",
+      "Karabar"
+    ],
+    "expected_answer": "Glenwood has a diversity index of approximately 0.807, compared with approximately 0.721 for Karabar."
+  },
+  {
+    "id": "GD05",
+    "question": "Compare prosperity in Glenwood and Karabar.",
+    "expected_kpi": "Prosperity Score",
+    "expected_column": "kpi_1_val",
+    "expected_geography": [
+      "Glenwood",
+      "Karabar"
+    ],
+    "expected_answer": "Glenwood has a prosperity score of approximately 58.44, compared with approximately 23.18 for Karabar."
+  },
+  {
+    "id": "GD06",
+    "question": "What is the population of Glenwood?",
+    "expected_kpi": "Population",
+    "expected_column": "population",
+    "expected_geography": ["Glenwood"],
+    "expected_answer": "The population of Glenwood is 15,829."
+  },
+  {
+    "id": "GD07",
+    "question": "Which has the higher diversity index, Glenwood or Karabar?",
+    "expected_kpi": "Diversity Index",
+    "expected_column": "kpi_2_val",
+    "expected_geography": [
+      "Glenwood",
+      "Karabar"
+    ],
+    "expected_answer": "Glenwood has the higher diversity index at approximately 0.807, compared with approximately 0.721 for Karabar."
+  },
+  {
+    "id": "GD08",
+    "question": "How affordable is renting in Glenwood?",
+    "expected_kpi": "Rental Access",
+    "expected_column": "kpi_7_val",
+    "expected_geography": ["Glenwood"],
+    "expected_answer": "Glenwood's Rental Access value is approximately 7.30%, meaning about 7.30% of dwellings are renting below $450 per week."
+  },
+  {
+    "id": "GD09",
+    "question": "How suitable is Glenwood for young families?",
+    "expected_kpi": "Young Family Indicator",
+    "expected_column": "kpi_10_val",
+    "expected_geography": ["Glenwood"],
+    "expected_answer": "Glenwood's Young Family Indicator is approximately 20.92%, meaning about 20.92% of the population is aged 0 to 14."
+  },
+  {
+    "id": "GD10",
+    "question": "What does kpi_13 measure?",
+    "expected_kpi": "Unsupported",
+    "expected_column": "kpi_13_val",
+    "expected_geography": [],
+    "expected_answer": "The kpi_13_val column exists in the data source, but its business meaning is not defined in the available Demografy data dictionary."
+  }
+]

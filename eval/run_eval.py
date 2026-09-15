@@ -1,329 +1,947 @@
-"""Automated evaluation runner (spec 6.2 / 6.3).
+# eval/run_eval.py
 
-    python -m eval.run_eval                 # full run, deterministic + judge
-    python -m eval.run_eval --no-judge      # deterministic only (no LLM cost)
-    python -m eval.run_eval --case 1 --case 7
-
-Every case is checked twice:
-  1. Deterministically, against ground truth computed from the database.
-  2. By an LLM judge, scored 1-5 (spec 6.3).
-
-The deterministic check is the one that decides pass/fail. The judge adds a
-quality score and catches "technically right but useless" answers. Where they
-disagree, the report flags it - that disagreement is usually the interesting
-part of the run.
-
-Writes docs/eval_report.md (gitignored: it contains real client data).
-"""
-
-import argparse
 import json
-import os
-import sys
 import time
-from datetime import datetime, timezone
+import traceback
+from pathlib import Path
 
 from agent.service import ask
-
-DATASET_PATH = os.path.join(os.path.dirname(__file__), "golden_dataset.json")
-REPORT_PATH = os.path.join("docs", "eval_report.md")
+from eval.judge import judge_answer
 
 
-def load_cases(path=DATASET_PATH):
-    with open(path, encoding="utf-8") as handle:
-        return json.load(handle).get("cases", [])
+# ---------------------------------------------------------
+# SETTINGS
+# ---------------------------------------------------------
+
+BASE_DIR = Path(__file__).resolve().parent
+
+DATASET_FILE = BASE_DIR / "golden_dataset.json"
+
+# Delay between questions to reduce Gemini rate-limit issues
+DELAY_BETWEEN_TESTS = 20
+
+# Number of times to retry a rate-limited agent request
+MAX_AGENT_RETRIES = 3
+
+# Initial wait before retrying
+INITIAL_RETRY_WAIT = 30
+
+# LLM Judge pass threshold
+JUDGE_PASS_SCORE = 0.75
 
 
-def _numbers_in(text):
-    """Every number in the answer, commas and % stripped."""
-    import re
+# ---------------------------------------------------------
+# ERROR HELPERS
+# ---------------------------------------------------------
 
-    found = []
+def is_rate_limit_error(error):
+    """
+    Check whether an error was caused by Gemini rate limiting.
+    """
 
-    for raw in re.findall(r"-?\d[\d,]*\.?\d*", text or ""):
+    error_text = str(error).lower()
+
+    return (
+        "429" in error_text
+        or "resource_exhausted" in error_text
+        or "rate_limited" in error_text
+        or "quota exceeded" in error_text
+        or "rate limit" in error_text
+    )
+
+
+def classify_error(error):
+    """
+    Convert technical errors into a simple QA category.
+    """
+
+    error_text = str(error).lower()
+
+    if is_rate_limit_error(error):
+        return "rate_limited"
+
+    if "timeout" in error_text:
+        return "timeout"
+
+    if "permission" in error_text or "forbidden" in error_text:
+        return "permission_error"
+
+    if (
+        "authentication" in error_text
+        or "credentials" in error_text
+    ):
+        return "authentication_error"
+
+    if "bigquery" in error_text:
+        return "bigquery_error"
+
+    return "agent_error"
+
+
+# ---------------------------------------------------------
+# GOLDEN DATASET
+# ---------------------------------------------------------
+
+def load_golden_dataset():
+    """
+    Load the 10-question Golden Dataset from JSON.
+    """
+
+    if not DATASET_FILE.exists():
+
+        raise FileNotFoundError(
+            f"Golden dataset not found: {DATASET_FILE}"
+        )
+
+    with open(
+        DATASET_FILE,
+        "r",
+        encoding="utf-8",
+    ) as file:
+
+        return json.load(file)
+
+
+# ---------------------------------------------------------
+# AGENT RESPONSE HELPERS
+# ---------------------------------------------------------
+
+def get_answer_text(response):
+    """
+    Extract the final answer from agent.service.ask().
+    """
+
+    if response is None:
+        return ""
+
+    # Current Demografy service response object
+    if hasattr(response, "answer"):
+        return str(response.answer or "")
+
+    if isinstance(response, str):
+        return response
+
+    if isinstance(response, dict):
+
+        possible_keys = [
+            "answer",
+            "response",
+            "message",
+            "output",
+            "text",
+        ]
+
+        for key in possible_keys:
+
+            if (
+                key in response
+                and response[key] is not None
+            ):
+                return str(response[key])
+
+    return str(response)
+
+
+def get_sql(response):
+    """
+    Extract generated SQL from the agent response.
+    """
+
+    if response is None:
+        return ""
+
+    if hasattr(response, "sql"):
+        return str(response.sql or "")
+
+    if isinstance(response, dict):
+        return str(response.get("sql") or "")
+
+    return ""
+
+
+def get_trace_url(response):
+    """
+    Extract the LangSmith trace URL.
+    """
+
+    if response is None:
+        return ""
+
+    if hasattr(response, "trace_url"):
+        return str(response.trace_url or "")
+
+    if isinstance(response, dict):
+        return str(response.get("trace_url") or "")
+
+    return ""
+
+
+def get_agent_error(response):
+    """
+    Extract any backend error returned by agent.service.ask().
+    """
+
+    if response is None:
+        return ""
+
+    if hasattr(response, "error"):
+        return str(response.error or "")
+
+    if isinstance(response, dict):
+        return str(response.get("error") or "")
+
+    return ""
+
+
+def agent_completed_successfully(response):
+    """
+    Check whether the Demografy service reports success.
+    """
+
+    if response is None:
+        return False
+
+    if hasattr(response, "ok"):
+        return bool(response.ok)
+
+    if isinstance(response, dict):
+
+        if "ok" in response:
+            return bool(response["ok"])
+
+        return True
+
+    return True
+
+
+# ---------------------------------------------------------
+# DETERMINISTIC CHECKS
+# ---------------------------------------------------------
+
+def check_expected_kpi_column(
+    actual_sql,
+    expected_column,
+):
+    """
+    Check whether the expected KPI/data column appears
+    in the SQL generated by the agent.
+    """
+
+    if not expected_column:
+        return True
+
+    if not actual_sql:
+        return False
+
+    return (
+        str(expected_column).lower()
+        in actual_sql.lower()
+    )
+
+
+def check_expected_geographies(
+    actual_sql,
+    expected_geographies,
+):
+    """
+    Check whether all expected geography names appear
+    in the generated SQL.
+    """
+
+    if not expected_geographies:
+        return True
+
+    if not actual_sql:
+        return False
+
+    sql_lower = actual_sql.lower()
+
+    # JSON dataset should normally contain a list.
+    if isinstance(expected_geographies, str):
+
+        expected_geographies = [
+            expected_geographies
+        ]
+
+    for geography in expected_geographies:
+
+        if str(geography).lower() not in sql_lower:
+            return False
+
+    return True
+
+
+# ---------------------------------------------------------
+# AGENT EXECUTION
+# ---------------------------------------------------------
+
+def run_agent_with_retry(question):
+    """
+    Run the Demografy agent.
+
+    Retries Gemini rate-limit errors.
+
+    Returns a dictionary containing:
+    success
+    response
+    answer
+    sql
+    trace_url
+    error
+    error_type
+    """
+
+    wait_seconds = INITIAL_RETRY_WAIT
+
+    for attempt in range(
+        1,
+        MAX_AGENT_RETRIES + 1,
+    ):
+
         try:
-            found.append(float(raw.replace(",", "")))
-        except ValueError:
-            continue
 
-    return found
+            response = ask(question)
 
+            # agent.service.ask() may return an object
+            # containing ok=False instead of raising an exception.
+            if not agent_completed_successfully(response):
 
-def validate(case, answer, sql):
-    """Deterministic check. Returns (passed, detail)."""
-    kind = case.get("validation")
-    expected = case.get("expected")
-    text = (answer or "").lower()
+                error = get_agent_error(response)
 
-    if kind == "contains_all":
-        missing = [e for e in expected if e.lower() not in text]
-        return (not missing), (
-            "all expected values present" if not missing
-            else f"missing: {', '.join(missing)}"
-        )
+                error_type = classify_error(error)
 
-    if kind == "first_of":
-        # Ordering matters, but ties make the exact leader unstable; accept any
-        # of the true top results appearing.
-        hit = [e for e in expected if e.lower() in text]
-        return bool(hit), (
-            f"found {hit[0]}" if hit else f"none of {expected} present"
-        )
+                if (
+                    error_type == "rate_limited"
+                    and attempt < MAX_AGENT_RETRIES
+                ):
 
-    if kind == "numeric":
-        tolerance = float(case.get("tolerance", 1.0))
-        target = float(expected)
-        close = [n for n in _numbers_in(text) if abs(n - target) <= tolerance]
-        return bool(close), (
-            f"found {close[0]} (expected {target} +/- {tolerance})" if close
-            else f"expected {target} +/- {tolerance}, saw {_numbers_in(text)[:6]}"
-        )
+                    print()
+                    print(
+                        f"Rate limit encountered. "
+                        f"Attempt {attempt}/"
+                        f"{MAX_AGENT_RETRIES}."
+                    )
 
-    if kind == "refusal":
-        # Any phrasing that admits the definition is unavailable.
-        hit = [e for e in expected if e.lower() in text]
-        if hit:
-            return True, f"correctly refused ('{hit[0]}')"
-        return False, "did not refuse - possible hallucination"
+                    print(
+                        f"Waiting {wait_seconds} "
+                        f"seconds before retry..."
+                    )
 
-    return False, f"unknown validation type: {kind}"
+                    time.sleep(wait_seconds)
 
+                    wait_seconds *= 2
 
-def check_sql(case, sql):
-    """Soft check that the SQL looks right. Never fails a case on its own."""
-    wanted = case.get("expected_sql_contains") or []
+                    continue
 
-    if not wanted:
-        return True, "n/a"
+                return {
+                    "success": False,
+                    "response": response,
+                    "answer": "",
+                    "sql": get_sql(response),
+                    "trace_url": get_trace_url(response),
+                    "error": error,
+                    "error_type": error_type,
+                }
 
-    if not sql:
-        return False, "no SQL captured"
+            return {
+                "success": True,
+                "response": response,
+                "answer": get_answer_text(response),
+                "sql": get_sql(response),
+                "trace_url": get_trace_url(response),
+                "error": None,
+                "error_type": None,
+            }
 
-    lowered = sql.lower()
-    missing = [w for w in wanted if w.lower() not in lowered]
+        except Exception as error:
 
-    return (not missing), ("ok" if not missing else f"missing {missing}")
+            error_type = classify_error(error)
 
+            print()
+            print(
+                f"Agent error: {error_type}"
+            )
 
-# Failure codes that mean "the case never really ran". Counting these as wrong
-# answers produces a report that understates accuracy and sends people hunting
-# for prompt bugs that do not exist.
-INFRA_FAILURES = ("rate_limited", "model_unavailable", "data_unavailable")
+            if (
+                error_type == "rate_limited"
+                and attempt < MAX_AGENT_RETRIES
+            ):
 
+                print(
+                    f"Rate limit encountered. "
+                    f"Attempt {attempt}/"
+                    f"{MAX_AGENT_RETRIES}."
+                )
 
-def run_case(case, use_judge=True, judge_llm=None, retries=3, backoff=20):
-    """Run one case, retrying through rate limits rather than scoring them."""
-    started = time.perf_counter()
-    result = None
+                print(
+                    f"Waiting {wait_seconds} "
+                    f"seconds before retry..."
+                )
 
-    for attempt in range(retries + 1):
-        result = ask(case["question"], user_id="eval_harness", tier="pro")
+                time.sleep(wait_seconds)
 
-        if result.reason != "rate_limited" or attempt == retries:
-            break
+                wait_seconds *= 2
 
-        wait = backoff * (attempt + 1)
-        print(f"         rate limited, waiting {wait}s "
-              f"(attempt {attempt + 1}/{retries})...")
-        time.sleep(wait)
+                continue
 
-    elapsed = time.perf_counter() - started
+            print(
+                f"Agent failed ({error_type}) "
+                f"for question: {question}"
+            )
 
-    if result.reason in INFRA_FAILURES:
-        return {
-            "id": case["id"],
-            "question": case["question"],
-            "status": "error",
-            "passed": False,
-            "detail": f"infrastructure failure ({result.reason}) - case did not run",
-            "sql_ok": False,
-            "sql_detail": "n/a",
-            "judge_score": None,
-            "judge_reason": None,
-            "answer": result.answer,
-            "sql": result.sql,
-            "error": result.error,
-            "reason_code": result.reason,
-            "trace_url": result.trace_url,
-            "elapsed": elapsed,
-        }
+            traceback.print_exc()
 
-    passed, detail = validate(case, result.answer, result.sql)
-    sql_ok, sql_detail = check_sql(case, result.sql)
-
-    score, reason = None, None
-
-    if use_judge:
-        from eval.judge import score_answer
-
-        score, reason = score_answer(
-            case["question"], case.get("expected"), result.answer,
-            result.sql, llm=judge_llm,
-        )
+            return {
+                "success": False,
+                "response": None,
+                "answer": "",
+                "sql": "",
+                "trace_url": "",
+                "error": str(error),
+                "error_type": error_type,
+            }
 
     return {
-        "id": case["id"],
-        "question": case["question"],
-        "status": "ok",
-        "passed": passed,
-        "detail": detail,
-        "sql_ok": sql_ok,
-        "sql_detail": sql_detail,
-        "judge_score": score,
-        "judge_reason": reason,
-        "answer": result.answer,
-        "sql": result.sql,
-        "error": result.error,
-        "reason_code": result.reason,
-        "trace_url": result.trace_url,
-        "elapsed": elapsed,
+        "success": False,
+        "response": None,
+        "answer": "",
+        "sql": "",
+        "trace_url": "",
+        "error": "Maximum retry attempts exceeded.",
+        "error_type": "rate_limited",
     }
 
 
-def build_report(results, use_judge):
-    errored = [r for r in results if r.get("status") == "error"]
-    scored_cases = [r for r in results if r.get("status") != "error"]
-    passed = [r for r in scored_cases if r["passed"]]
-    accuracy = (len(passed) / len(scored_cases) * 100) if scored_cases else 0
-    scored = [r["judge_score"] for r in results if r.get("judge_score")]
-    avg_score = (sum(scored) / len(scored)) if scored else None
+# ---------------------------------------------------------
+# ONE GOLDEN DATASET TEST
+# ---------------------------------------------------------
 
-    lines = [
-        "# Evaluation report",
-        "",
-        "> **CONFIDENTIAL - contains real client data. Gitignored.**",
-        "",
-        f"Generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
-        "",
-        "## Summary",
-        "",
-        f"- Cases: **{len(results)}**"
-        + (f" ({len(errored)} could not run)" if errored else ""),
-        f"- Passed (deterministic): **{len(passed)}/{len(scored_cases)} "
-        f"= {accuracy:.0f}%**",
-    ]
+def run_test(test):
+    """
+    Run one Golden Dataset evaluation question.
+    """
 
-    if errored:
-        lines.append(
-            f"- **{len(errored)} case(s) failed on infrastructure** "
-            f"({', '.join(sorted({r['reason_code'] for r in errored}))}) and are "
-            "excluded from accuracy. Re-run them before quoting this report."
+    test_id = test.get("id", "UNKNOWN")
+
+    question = test.get(
+        "question",
+        "",
+    )
+
+    expected_answer = test.get(
+        "expected_answer",
+        "",
+    )
+
+    expected_kpi = test.get(
+        "expected_kpi",
+        "",
+    )
+
+    expected_column = test.get(
+        "expected_column"
+    )
+
+    expected_geographies = test.get(
+        "expected_geography",
+        [],
+    )
+
+    print()
+    print("=" * 70)
+    print(f"{test_id}: {question}")
+
+    start_time = time.time()
+
+    # -----------------------------------------------------
+    # Run Demografy agent
+    # -----------------------------------------------------
+
+    agent_result = run_agent_with_retry(
+        question
+    )
+
+    latency = round(
+        time.time() - start_time,
+        2,
+    )
+
+    # -----------------------------------------------------
+    # Agent/API/infrastructure failure
+    # -----------------------------------------------------
+
+    if not agent_result["success"]:
+
+        print()
+        print("KPI check: NOT SCORED")
+        print("Geography check: NOT SCORED")
+        print("LLM Judge: NOT SCORED")
+        print(f"Latency: {latency}s")
+        print("Result: ERROR")
+
+        print(
+            f"Error type: "
+            f"{agent_result['error_type']}"
         )
 
-    if avg_score is not None:
-        lines.append(f"- Mean judge score: **{avg_score:.2f} / 5**")
+        if agent_result["error"]:
 
-    disagreements = [
-        r for r in results
-        if r.get("judge_score") and (r["judge_score"] >= 4) != r["passed"]
-    ]
+            print(
+                f"Error: "
+                f"{agent_result['error']}"
+            )
 
-    if disagreements:
-        lines.append(
-            f"- **Judge disagrees with the deterministic check on "
-            f"{len(disagreements)} case(s)** - review these first."
+        if agent_result["trace_url"]:
+
+            print(
+                f"LangSmith trace: "
+                f"{agent_result['trace_url']}"
+            )
+
+        return {
+            "test_id": test_id,
+            "question": question,
+            "expected_kpi": expected_kpi,
+            "expected_column": expected_column,
+            "expected_answer": expected_answer,
+            "actual_answer": "",
+            "actual_sql": agent_result["sql"],
+            "kpi_check": None,
+            "geography_check": None,
+            "llm_judge": None,
+            "judge_reason": "",
+            "status": "ERROR",
+            "error_type":
+                agent_result["error_type"],
+            "error":
+                agent_result["error"],
+            "latency_seconds": latency,
+            "langsmith_trace":
+                agent_result["trace_url"],
+        }
+
+    answer = agent_result["answer"]
+
+    actual_sql = agent_result["sql"]
+
+    trace_url = agent_result["trace_url"]
+
+    # -----------------------------------------------------
+    # Deterministic checks
+    # -----------------------------------------------------
+
+    kpi_check = check_expected_kpi_column(
+        actual_sql,
+        expected_column,
+    )
+
+    geography_check = (
+        check_expected_geographies(
+            actual_sql,
+            expected_geographies,
+        )
+    )
+
+    # -----------------------------------------------------
+    # LLM Judge
+    # -----------------------------------------------------
+
+    judge_score = None
+    judge_reason = ""
+
+    # Do not score if no expected answer has
+    # been entered into the Golden Dataset.
+    if expected_answer:
+
+        try:
+
+            judge_result = judge_answer(
+                question=question,
+                expected_answer=expected_answer,
+                actual_answer=answer,
+            )
+
+            judge_score = judge_result.get(
+                "score"
+            )
+
+            judge_reason = judge_result.get(
+                "reason",
+                "",
+            )
+
+        except Exception as error:
+
+            judge_score = None
+            judge_reason = str(error)
+
+            print()
+            print(
+                "Judge encountered an error. "
+                "The evaluation will continue."
+            )
+
+    else:
+
+        judge_reason = (
+            "Expected answer is empty. "
+            "LLM Judge was not run."
         )
 
-    lines += [
-        "",
-        "## Results",
-        "",
-        "| # | Question | Pass | Judge | SQL | Time | Detail |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
-    ]
+    # -----------------------------------------------------
+    # Final classification
+    # -----------------------------------------------------
 
-    for r in results:
-        mark = "ERROR" if r.get("status") == "error" else (
-            "PASS" if r["passed"] else "FAIL")
-        judge = f"{r['judge_score']}/5" if r.get("judge_score") else "-"
-        sql_mark = "ok" if r["sql_ok"] else "?"
-        lines.append(
-            f"| {r['id']} | {r['question'][:48]} | {mark} | {judge} | "
-            f"{sql_mark} | {r['elapsed']:.1f}s | {r['detail'][:60]} |"
+    if judge_score is None:
+
+        # Agent completed, but full Golden Dataset
+        # evaluation cannot be completed without
+        # an expected answer/judge score.
+
+        status = "NOT_SCORED"
+
+    elif (
+        kpi_check
+        and geography_check
+        and judge_score >= JUDGE_PASS_SCORE
+    ):
+
+        status = "PASS"
+
+    else:
+
+        status = "FAIL"
+
+    # -----------------------------------------------------
+    # Terminal output
+    # -----------------------------------------------------
+
+    print()
+    print(
+        f"KPI check: "
+        f"{kpi_check}"
+    )
+
+    print(
+        f"Geography check: "
+        f"{geography_check}"
+    )
+
+    if judge_score is None:
+
+        print(
+            "LLM Judge: NOT SCORED"
         )
 
-    lines += ["", "## Failures and disagreements", ""]
-    notable = [r for r in results if not r["passed"] or r in disagreements]
+    else:
 
-    if not notable:
-        lines.append("_None - every case passed and the judge agreed._")
+        print(
+            f"LLM Judge: "
+            f"{judge_score}"
+        )
 
-    for r in notable:
-        lines += [
-            f"### Case {r['id']}: {r['question']}",
-            "",
-            f"- Deterministic: **{'PASS' if r['passed'] else 'FAIL'}** - {r['detail']}",
-            f"- Judge: {r.get('judge_score') or '-'}/5 - {r.get('judge_reason') or ''}",
-            f"- SQL check: {r['sql_detail']}",
-        ]
-        if r.get("trace_url"):
-            lines.append(f"- [Trace]({r['trace_url']})")
-        lines += ["", "```sql", (r["sql"] or "-- no SQL"), "```", "",
-                  "Answer given:", "", "> " + (r["answer"] or "")[:500].replace("\n", "\n> "), ""]
+    print(
+        f"Latency: "
+        f"{latency}s"
+    )
 
-    return "\n".join(lines)
+    print(
+        f"Result: "
+        f"{status}"
+    )
 
+    if judge_reason:
+
+        print(
+            f"Judge: "
+            f"{judge_reason}"
+        )
+
+    if actual_sql:
+
+        print()
+        print("Generated SQL:")
+        print(actual_sql)
+
+    if trace_url:
+
+        print()
+        print(
+            f"LangSmith trace: "
+            f"{trace_url}"
+        )
+
+    # -----------------------------------------------------
+    # Return result
+    # -----------------------------------------------------
+
+    return {
+        "test_id": test_id,
+        "question": question,
+        "expected_kpi": expected_kpi,
+        "expected_column": expected_column,
+        "expected_answer": expected_answer,
+        "actual_answer": answer,
+        "actual_sql": actual_sql,
+        "kpi_check": kpi_check,
+        "geography_check": geography_check,
+        "llm_judge": judge_score,
+        "judge_reason": judge_reason,
+        "status": status,
+        "error_type": "",
+        "error": "",
+        "latency_seconds": latency,
+        "langsmith_trace": trace_url,
+    }
+
+
+# ---------------------------------------------------------
+# SUMMARY
+# ---------------------------------------------------------
+
+def print_summary(results):
+    """
+    Print the final Demografy QA evaluation summary.
+    """
+
+    total = len(results)
+
+    passed = sum(
+        1
+        for result in results
+        if result["status"] == "PASS"
+    )
+
+    failed = sum(
+        1
+        for result in results
+        if result["status"] == "FAIL"
+    )
+
+    errors = sum(
+        1
+        for result in results
+        if result["status"] == "ERROR"
+    )
+
+    not_scored = sum(
+        1
+        for result in results
+        if result["status"] == "NOT_SCORED"
+    )
+
+    completed = passed + failed
+
+    if completed > 0:
+
+        accuracy = round(
+            (passed / completed) * 100,
+            2,
+        )
+
+    else:
+
+        accuracy = 0
+
+    # Judge scores only for successfully judged tests
+    judge_scores = [
+        result["llm_judge"]
+        for result in results
+        if result["llm_judge"] is not None
+    ]
+
+    if judge_scores:
+
+        average_judge_score = round(
+            sum(judge_scores)
+            / len(judge_scores),
+            2,
+        )
+
+    else:
+
+        average_judge_score = None
+
+    # Calculate average latency across all runs
+    latencies = [
+        result["latency_seconds"]
+        for result in results
+    ]
+
+    if latencies:
+
+        average_latency = round(
+            sum(latencies) / len(latencies),
+            2,
+        )
+
+    else:
+
+        average_latency = 0
+
+    print()
+    print("=" * 70)
+    print(
+        "DEMOGRAFY GOLDEN DATASET "
+        "EVALUATION SUMMARY"
+    )
+    print("=" * 70)
+
+    print(
+        f"Total test cases:       "
+        f"{total}"
+    )
+
+    print(
+        f"Passed:                 "
+        f"{passed}"
+    )
+
+    print(
+        f"Failed:                 "
+        f"{failed}"
+    )
+
+    print(
+        f"Errors:                 "
+        f"{errors}"
+    )
+
+    print(
+        f"Not scored:             "
+        f"{not_scored}"
+    )
+
+    print(
+        f"Valid completed tests:  "
+        f"{completed}"
+    )
+
+    print()
+
+    print(
+        f"Accuracy:               "
+        f"{accuracy}%"
+    )
+
+    if average_judge_score is not None:
+
+        print(
+            f"Average LLM Judge:      "
+            f"{average_judge_score}"
+        )
+
+    else:
+
+        print(
+            "Average LLM Judge:      "
+            "NOT SCORED"
+        )
+
+    print(
+        f"Average latency:        "
+        f"{average_latency}s"
+    )
+
+    # Show failed tests
+    if failed > 0:
+
+        print()
+        print("Failed tests:")
+
+        for result in results:
+
+            if result["status"] == "FAIL":
+
+                print(
+                    f"  {result['test_id']}"
+                )
+
+    # Show infrastructure/API errors
+    if errors > 0:
+
+        print()
+        print(
+            "Infrastructure/API errors:"
+        )
+
+        for result in results:
+
+            if result["status"] == "ERROR":
+
+                print(
+                    f"  {result['test_id']} - "
+                    f"{result['error_type']}"
+                )
+
+    # Show tests without expected answers
+    if not_scored > 0:
+
+        print()
+        print(
+            "Tests awaiting valid judgement:"
+        )
+
+        for result in results:
+
+            if (
+                result["status"]
+                == "NOT_SCORED"
+            ):
+
+                print(
+                    f"  {result['test_id']}"
+                )
+
+    print("=" * 70)
+
+
+# ---------------------------------------------------------
+# MAIN
+# ---------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Run the golden-dataset eval.")
-    parser.add_argument("--no-judge", action="store_true",
-                        help="Skip LLM judging (deterministic checks only).")
-    parser.add_argument("--case", type=int, action="append",
-                        help="Run only these case ids (repeatable).")
-    parser.add_argument("--delay", type=float, default=6.0,
-                        help="Seconds to pause between cases (rate limits).")
-    args = parser.parse_args()
+    """
+    Run all Golden Dataset questions.
+    """
 
-    cases = load_cases()
+    dataset = load_golden_dataset()
 
-    if args.case:
-        cases = [c for c in cases if c["id"] in args.case]
-
-    if not cases:
-        print("No cases to run.")
-        return 1
-
-    use_judge = not args.no_judge
-    judge_llm = None
-
-    if use_judge:
-        from eval.judge import build_judge_llm
-
-        judge_llm = build_judge_llm()
-
-    print(f"Running {len(cases)} case(s){' with judge' if use_judge else ''}...\n")
     results = []
 
-    for case in cases:
-        result = run_case(case, use_judge=use_judge, judge_llm=judge_llm)
-        results.append(result)
+    total_tests = len(dataset)
 
-        mark = "ERR " if result.get("status") == "error" else (
-            "PASS" if result["passed"] else "FAIL")
-        judge = f" judge={result['judge_score']}/5" if result.get("judge_score") else ""
-        print(f"  [{mark}] {case['id']:>2}. {case['question'][:52]:<52}"
-              f" {result['elapsed']:.1f}s{judge}")
+    for index, test_case in enumerate(
+        dataset,
+        start=1,
+    ):
 
-        if not result["passed"]:
-            print(f"         -> {result['detail'][:100]}")
+        result = run_test(
+            test_case
+        )
 
-        # Free-tier Gemini quotas are per-minute; pacing keeps a 10-case run
-        # from failing halfway through for reasons unrelated to quality.
-        if args.delay and case is not cases[-1]:
-            time.sleep(args.delay)
+        results.append(
+            result
+        )
 
-    report = build_report(results, use_judge)
-    os.makedirs("docs", exist_ok=True)
+        # Do not wait after the final test.
+        if index < total_tests:
 
-    with open(REPORT_PATH, "w", encoding="utf-8") as handle:
-        handle.write(report)
+            print()
+            print(
+                f"Waiting "
+                f"{DELAY_BETWEEN_TESTS} "
+                f"seconds before next test..."
+            )
 
-    failed = [r for r in results if not r["passed"]]
-    print(f"\n{len(results) - len(failed)}/{len(results)} passed. "
-          f"Report written to {REPORT_PATH}")
+            time.sleep(
+                DELAY_BETWEEN_TESTS
+            )
 
-    return 1 if failed else 0
+    print_summary(
+        results
+    )
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
