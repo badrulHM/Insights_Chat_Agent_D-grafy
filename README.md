@@ -73,7 +73,7 @@ as a named parameter, so login input can never be parsed as SQL.
 
 ```
 Insights_Chat_Agent_D-grafy/
-├── app.py                        # Thin Streamlit harness (chat + chart)
+├── app.py                        # Thin Streamlit harness (sign-in, chat, chart)
 ├── ui_charts.py                  # Plotly rendering of a ChartSpec
 ├── config.py                     # Env-driven settings, single source for secrets
 ├── agent/
@@ -186,7 +186,7 @@ python -m scripts.check_scope             # + live agent behaviour
 | 5. Row cap 50 | `MAX_RESULT_ROWS`, enforced on every fetch |
 | 5. Fully qualified names | `require_qualified=True` on the agent path - a bare `a_master_view` is rejected |
 | 5. Column aliases | Prompt rule |
-| 6. Auth and session | `auth/rbac.py`: tier read once at login, per-session quotas, inactive accounts denied. Complete and tested; not surfaced in the thin harness |
+| 6. Auth and session | `auth/rbac.py`: tier read once at sign-in and never re-read, per-session quotas, inactive accounts denied. Surfaced in the harness |
 | 7. Error handling | Stable `reason` codes; unrecognised KPI triggers a clarification listing the available KPIs |
 | 8. Security | Guards, named parameters, no schema exposure, no credentials in traces |
 | 9. Charts | Bar, column and table only, via `st.plotly_chart` / `st.dataframe`. No maps, heatmaps or dashboards. Text always primary |
@@ -294,12 +294,17 @@ from agent.service import ask          # answer, chart, sql, trace
 from ui_charts import build_chart      # ChartSpec -> Plotly figure
 ```
 
-**RBAC is not wired into this harness.** `auth/rbac.py` is complete and
-tested - login, tier lookup, per-session quotas with warning thresholds, and a
-`SessionQuota` counter - and `scripts/check_rbac.py` exercises all of it
-without a browser. Surfacing it (login box, question counter, disabled input
-at the limit) is frontend work and deliberately left out here. See **Backend
-usage** above for the API.
+**RBAC is wired in**, with deliberately plain widgets - a sidebar text input
+to sign in, a progress bar for the question counter, and a disabled chat input
+at the limit. No CSS, no custom HTML.
+
+Sign in with a `user_id` from the customer table (`user_001` free, `user_006`
+basic, `user_003` pro; `user_004` is inactive and is denied). The tier is read
+once at sign-in and never re-read, so it cannot change mid-session (scope
+boundaries 6). A question is only counted after it produced an answer.
+
+`scripts/check_rbac.py` exercises the same policy without a browser or any LLM
+calls.
 
 ### Charts
 
@@ -394,9 +399,9 @@ classification; chart suggestion; live question counter; RBAC walkthrough tool.
 **Scope compliance (done).** Every section of the Scope Boundaries Document is
 covered, with `scripts/check_scope.py` proving it.
 
-**Frontend.** `app.py` is a thin harness only: chat in, text answer and Plotly
-chart out, with a dev toggle for the generated SQL. RBAC is built and tested in
-the backend but not surfaced in this harness - that is frontend work.
+**Frontend.** `app.py` is a thin harness: sign-in, chat, text answer, chart or
+table, question counter, and a dev toggle for the generated SQL. Plain widgets
+only - styling and branding are for whoever rebuilds the UI.
 
 ### Known issues
 

@@ -5,14 +5,18 @@ end to end (question -> Gemini -> SQL -> BigQuery -> text answer -> chart).
 Branding, the login screen, tier counters and chat styling belong to the
 Frontend role - this file is expected to be rebuilt on the Frontend branch.
 
-The UI needs two things from the backend: `agent.service.ask` for the answer,
-and `ui_charts.build_chart` to draw the chart it suggests. RBAC is wired and
-tested in `auth/rbac.py` but is NOT surfaced here - see the README.
+Three imports from the backend carry everything: `agent.service.ask` for the
+answer, `ui_charts.build_chart` to draw the chart it suggests, and `auth.rbac`
+for sign-in and the per-session question quota.
+
+The RBAC widgets below are deliberately plain - a text input, a caption and a
+disabled chat input. No CSS, no custom HTML, no columns.
 """
 
 import streamlit as st
 
 from agent.service import ask, tracing_enabled
+from auth.rbac import SessionQuota, authenticate
 from config import settings
 from db.bigquery_client import run_query
 from ui_charts import build_chart
@@ -42,6 +46,56 @@ with st.sidebar:
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+st.session_state.setdefault("user", None)
+st.session_state.setdefault("quota", None)
+
+# --- Sign in and question quota (spec 4.3, scope boundaries 6) --------------
+
+with st.sidebar:
+    st.divider()
+    st.subheader("Session")
+
+    if st.session_state.user is None:
+        entered = st.text_input("User ID", placeholder="user_001")
+
+        if st.button("Sign in"):
+            auth = authenticate(entered)
+
+            if auth.ok:
+                # The tier is captured once here and never re-read, so it
+                # cannot change mid-session (scope boundaries 6).
+                st.session_state.user = auth.user
+                st.session_state.quota = SessionQuota(auth.user.tier)
+                st.session_state.messages = []
+                st.rerun()
+            else:
+                st.error(auth.error)
+    else:
+        user = st.session_state.user
+        quota = st.session_state.quota
+        quota_status = quota.status()
+
+        st.write(f"**{user.user_id}** - {user.tier} tier")
+        st.progress(quota.fraction_used, text=quota.label)
+
+        if not quota_status.allowed:
+            st.error(quota_status.message)
+        elif quota_status.should_warn:
+            st.warning(quota_status.message)
+
+        if st.button("Sign out"):
+            st.session_state.user = None
+            st.session_state.quota = None
+            st.session_state.messages = []
+            st.rerun()
+
+if st.session_state.user is None:
+    st.info("Sign in from the sidebar to ask a question.")
+    st.stop()
+
+user = st.session_state.user
+quota = st.session_state.quota
 
 def render_chart(chart):
     """Draw whatever visual the backend chose, if it chose one.
@@ -75,7 +129,14 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
         render_chart(message.get("chart"))
 
-question = st.chat_input("e.g. Top 3 most diverse suburbs in Victoria")
+allowed = quota.status().allowed
+
+question = st.chat_input(
+    "Question limit reached for this session"
+    if not allowed
+    else "e.g. Top 3 most diverse suburbs in Victoria",
+    disabled=not allowed,
+)
 
 if question:
     st.session_state.messages.append({"role": "user", "content": question})
@@ -87,7 +148,12 @@ if question:
         with st.spinner("Querying BigQuery..."):
             # with_data=True returns the rows and a chart suggestion. It costs
             # no extra BigQuery job - the rows are reused from the agent run.
-            result = ask(question, with_data=True)
+            result = ask(
+                question,
+                user_id=user.user_id,
+                tier=user.tier,
+                with_data=True,
+            )
 
         st.markdown(result.answer)
         render_chart(result.chart)
@@ -104,3 +170,9 @@ if question:
             "chart": result.chart,
         }
     )
+
+    # Only charge the user for questions that actually produced an answer
+    if result.ok:
+        quota.consume()
+
+    st.rerun()
