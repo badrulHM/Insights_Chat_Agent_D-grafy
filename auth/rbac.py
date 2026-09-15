@@ -180,3 +180,75 @@ def _limit_reached_message(tier, limit):
         f"You have used all {limit} questions in this session. "
         "Start a new session to continue."
     )
+
+
+class SessionQuota:
+    """A live question counter for one session (spec 4.3).
+
+    `check_quota` is a pure function; this is the stateful counter the UI binds
+    to. Streamlit rebuilds the script on every interaction, so store the
+    instance itself in `st.session_state` and it survives reruns:
+
+        if "quota" not in st.session_state:
+            st.session_state.quota = SessionQuota(user.tier)
+
+        q = st.session_state.quota
+        st.sidebar.progress(q.fraction_used, text=q.label)
+
+        if not q.status().allowed:
+            st.chat_input(disabled=True)
+        elif prompt := st.chat_input():
+            answer = ask(prompt, user_id=user.user_id, tier=q.tier)
+            q.consume()          # count it only after it actually ran
+
+    Count *after* a successful answer, not before: charging a user for a
+    question that failed because BigQuery was down is the kind of thing people
+    remember.
+    """
+
+    def __init__(self, tier, used=0):
+        self.tier = (tier or DEFAULT_TIER).strip().lower()
+        self.used = max(int(used or 0), 0)
+
+    @property
+    def limit(self):
+        return question_limit(self.tier)
+
+    @property
+    def remaining(self):
+        return max(self.limit - self.used, 0)
+
+    @property
+    def fraction_used(self):
+        """0.0-1.0, for a progress bar."""
+        return min(self.used / self.limit, 1.0) if self.limit else 1.0
+
+    @property
+    def label(self):
+        """Sidebar text, e.g. 'Pro - 3 of 50 questions used'."""
+        return f"{self.tier.title()} - {self.used} of {self.limit} questions used"
+
+    def status(self):
+        """Current QuotaStatus without changing the count."""
+        return check_quota(self.tier, self.used)
+
+    def consume(self, count=1):
+        """Record `count` answered questions and return the new status."""
+        self.used += max(int(count), 0)
+        return self.status()
+
+    def reset(self):
+        """Start a fresh session for the same tier."""
+        self.used = 0
+        return self.status()
+
+    def to_dict(self):
+        return {"tier": self.tier, "used": self.used}
+
+    @classmethod
+    def from_dict(cls, data):
+        data = data or {}
+        return cls(tier=data.get("tier"), used=data.get("used", 0))
+
+    def __repr__(self):
+        return f"SessionQuota(tier={self.tier!r}, used={self.used}/{self.limit})"

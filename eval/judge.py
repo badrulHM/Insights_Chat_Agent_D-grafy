@@ -1,176 +1,112 @@
-# eval/judge.py
+"""LLM-as-a-judge scoring (spec 6.3).
 
-import os
-import time
-from google import genai
+Scores an answer 1-5 against the expected result:
 
+    5  perfect match with correct data
+    4  correct data, minor formatting issues
+    3  mostly correct, small discrepancies
+    2  partially correct, significant errors
+    1  wrong answer or failed to execute
 
-# Judge model
-JUDGE_MODEL = os.getenv(
-    "EVAL_JUDGE_MODEL",
-    "gemini-3.5-flash"
-)
+The judge is deliberately a *second* signal. `run_eval.py` also checks the
+answer deterministically (exact names, numeric tolerance), because an LLM
+grading an LLM shares blind spots - both can agree on a plausible wrong number.
+Where the two disagree, trust the deterministic check and read the trace.
+"""
 
-# Maximum retry attempts when Gemini returns a rate limit error
-MAX_RETRIES = 3
+import json
+import re
 
-# First wait period before retrying
-INITIAL_RETRY_WAIT = 30
+from langchain_google_genai import ChatGoogleGenerativeAI
 
+from agent.tools import message_text
+from config import settings
 
-def is_rate_limit_error(error):
-    """
-    Check whether an exception is caused by Gemini API rate limiting.
-    """
-
-    error_text = str(error).lower()
-
-    return (
-        "429" in error_text
-        or "resource_exhausted" in error_text
-        or "rate limit" in error_text
-        or "quota exceeded" in error_text
-    )
-
-
-def judge_answer(question, expected_answer, actual_answer):
-    """
-    Ask Gemini to judge whether the agent's answer is correct.
-
-    Returns a dictionary.
-
-    Example successful result:
-
-    {
-        "score": 1.0,
-        "reason": "The answer matches the expected result.",
-        "status": "SUCCESS"
-    }
-
-    If the judge cannot run:
-
-    {
-        "score": None,
-        "reason": "...",
-        "status": "ERROR"
-    }
-    """
-
-    # Do not call the judge if there is no usable agent answer
-    if actual_answer is None or str(actual_answer).strip() == "":
-        return {
-            "score": None,
-            "reason": "No agent answer was available to judge.",
-            "status": "NOT_SCORED",
-        }
-
-    api_key = os.getenv("GOOGLE_API_KEY")
-
-    if not api_key:
-        return {
-            "score": None,
-            "reason": "GOOGLE_API_KEY is not configured.",
-            "status": "ERROR",
-        }
-
-    client = genai.Client(api_key=api_key)
-
-    prompt = f"""
-You are evaluating an AI demographic insights agent.
+JUDGE_PROMPT = """You are grading a data analyst's answer against known-correct data.
 
 QUESTION:
 {question}
 
-EXPECTED ANSWER:
-{expected_answer}
+EXPECTED (ground truth computed directly from the database):
+{expected}
 
-ACTUAL AGENT ANSWER:
-{actual_answer}
+ACTUAL ANSWER GIVEN:
+{answer}
 
-Judge whether the actual answer is correct based on the expected answer.
+SQL THE ANALYST RAN:
+{sql}
 
-Return only one of these values:
+Score the ACTUAL ANSWER 1-5:
+5 = perfect match with correct data
+4 = correct data, minor formatting issues
+3 = mostly correct, small discrepancies
+2 = partially correct, significant errors
+1 = wrong answer, hallucinated data, or failed to execute
 
-1
+Rules:
+- Judge the DATA, not the writing style. Extra prose is fine.
+- Numbers within 1% of expected are correct.
+- If the expected behaviour is a refusal, a correct refusal scores 5 and a
+  confident invented answer scores 1.
+- Inventing data that is not in the expected result is always a 1.
 
-if the answer is correct or meaningfully equivalent.
+Respond with ONLY a JSON object:
+{{"score": <1-5>, "reason": "<one sentence>"}}"""
 
-Return:
 
-0
+def build_judge_llm():
+    """A separate, deterministic model instance for grading."""
+    return ChatGoogleGenerativeAI(
+        model=settings.gemini_model,
+        google_api_key=settings.gemini_api_key,
+        temperature=0,
+        max_retries=settings.gemini_max_retries,
+    )
 
-if the answer is incorrect.
 
-Do not return any other text.
-"""
+def _parse_score(raw):
+    """Pull {"score": n, "reason": "..."} out of the model's reply."""
+    text = message_text(raw).strip()
 
-    wait_seconds = INITIAL_RETRY_WAIT
+    # Models often wrap JSON in a markdown fence.
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fenced:
+        text = fenced.group(1)
+    else:
+        braces = re.search(r"\{.*\}", text, re.DOTALL)
+        if braces:
+            text = braces.group(0)
 
-    for attempt in range(1, MAX_RETRIES + 1):
+    try:
+        data = json.loads(text)
+        score = int(data.get("score", 0))
+        if 1 <= score <= 5:
+            return score, str(data.get("reason", ""))[:300]
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
 
-        try:
-            response = client.models.generate_content(
-                model=JUDGE_MODEL,
-                contents=prompt,
-            )
+    # Last resort: a bare digit somewhere in the reply.
+    digit = re.search(r"\b([1-5])\b", text)
+    if digit:
+        return int(digit.group(1)), "parsed from unstructured reply"
 
-            response_text = (response.text or "").strip()
+    return 0, f"could not parse judge reply: {text[:120]}"
 
-            if response_text.startswith("1"):
-                return {
-                    "score": 1.0,
-                    "reason": "LLM judge marked the answer as correct.",
-                    "status": "SUCCESS",
-                }
 
-            if response_text.startswith("0"):
-                return {
-                    "score": 0.0,
-                    "reason": "LLM judge marked the answer as incorrect.",
-                    "status": "SUCCESS",
-                }
+def score_answer(question, expected, answer, sql=None, llm=None):
+    """Return (score, reason). Score 0 means the judge itself failed."""
+    llm = llm or build_judge_llm()
 
-            return {
-                "score": None,
-                "reason": f"Unexpected judge response: {response_text}",
-                "status": "ERROR",
-            }
+    prompt = JUDGE_PROMPT.format(
+        question=question,
+        expected=json.dumps(expected, ensure_ascii=False),
+        answer=answer or "(no answer)",
+        sql=sql or "(no SQL executed)",
+    )
 
-        except Exception as error:
+    try:
+        reply = llm.invoke(prompt)
+    except Exception as exc:
+        return 0, f"judge call failed: {type(exc).__name__}: {exc}"
 
-            if is_rate_limit_error(error):
-
-                print(
-                    f"LLM Judge rate limited. "
-                    f"Attempt {attempt}/{MAX_RETRIES}."
-                )
-
-                if attempt < MAX_RETRIES:
-                    print(
-                        f"Waiting {wait_seconds} seconds before retry..."
-                    )
-
-                    time.sleep(wait_seconds)
-
-                    # Increase the delay for the next retry
-                    wait_seconds = wait_seconds * 2
-
-                    continue
-
-                return {
-                    "score": None,
-                    "reason": f"LLM judge rate limited: {error}",
-                    "status": "ERROR",
-                }
-
-            return {
-                "score": None,
-                "reason": f"LLM judge error: {error}",
-                "status": "ERROR",
-            }
-
-    return {
-        "score": None,
-        "reason": "LLM judge could not complete.",
-        "status": "ERROR",
-    }
+    return _parse_score(reply.content)

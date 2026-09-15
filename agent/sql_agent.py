@@ -12,6 +12,7 @@ from langchain_community.utilities import SQLDatabase
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from agent.prompts import FEW_SHOT_PREFIX, build_system_prefix
+from agent.safe_tools import build_safe_tools
 from config import settings
 
 # Stop a confused agent looping against BigQuery. LangGraph counts every node
@@ -89,9 +90,11 @@ def create_insight_agent(include_examples=True):
 
     return create_agent(
         model=llm,
-        # The standard SQL toolkit: list tables, get schema, check query, run
-        # query. Scoped to the one view `build_db` exposes.
-        tools=SQLDatabaseToolkit(db=db, llm=llm).get_tools(),
+        # The standard SQL toolkit (list tables, get schema, check query) but
+        # with the query tool replaced by a guarded one - the stock tool
+        # executes SQLAlchemy directly and bypasses every check in
+        # db.bigquery_client. See agent/safe_tools.py.
+        tools=build_safe_tools(SQLDatabaseToolkit(db=db, llm=llm)),
         system_prompt=build_system_prompt(prefix, db.dialect),
         name="insight-agent",
     )

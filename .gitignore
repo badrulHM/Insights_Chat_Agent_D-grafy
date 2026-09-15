@@ -19,8 +19,14 @@ secrets/
 *service-account*.json
 *credentials*.json
 
-# Generated data profile - contains real client data (state values, KPI stats)
+# docs/ holds client documents (specs, brand guidelines, scope boundaries) and
+# generated reports containing real client data. None of it belongs in a public
+# repo - the code references these by section number instead.
+docs/
 docs/data_profile.md
 
 # Client documents - confidential, not ours to publish
 *.pdf
+
+# Eval report - contains real client data
+docs/eval_report.md
