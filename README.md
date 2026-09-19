@@ -141,7 +141,6 @@ The intended business outcome is a simpler and faster path from **user question 
 <th>#</th>
 <th>Requirement</th>
 <th>What it means</th>
-<th>Current state</th>
 </tr>
 </thead>
 <tbody>
@@ -149,79 +148,66 @@ The intended business outcome is a simpler and faster path from **user question 
 <td>1</td>
 <td><strong>Natural-language querying</strong></td>
 <td>Users can ask supported demographic questions using normal business language.</td>
-<td>✅ Implemented</td>
 </tr>
 <tr>
 <td>2</td>
 <td><strong>KPI understanding</strong></td>
 <td>The solution maps business KPI names and aliases to the correct Demografy data fields.</td>
-<td>✅ Implemented</td>
 </tr>
 <tr>
 <td>3</td>
 <td><strong>Geography understanding</strong></td>
 <td>The agent identifies and applies the requested geography to the query.</td>
-<td>✅ Implemented</td>
 </tr>
 <tr>
 <td>4</td>
 <td><strong>SQL generation</strong></td>
 <td>The AI converts a supported user question into BigQuery SQL.</td>
-<td>✅ Implemented</td>
 </tr>
 <tr>
 <td>5</td>
 <td><strong>Controlled data access</strong></td>
 <td>The AI may query only the approved demographic data source.</td>
-<td>✅ Implemented</td>
 </tr>
 <tr>
 <td>6</td>
 <td><strong>Customer entitlement</strong></td>
 <td>The customer tier is resolved outside the AI agent.</td>
-<td>✅ Prototype implemented</td>
 </tr>
 <tr>
 <td>7</td>
 <td><strong>Tier quotas</strong></td>
 <td>Free, Basic and Pro users receive different session question limits.</td>
-<td>✅ Prototype implemented</td>
 </tr>
 <tr>
 <td>8</td>
 <td><strong>Natural-language answers</strong></td>
 <td>Query results are presented as understandable text rather than raw SQL output.</td>
-<td>✅ Implemented</td>
 </tr>
 <tr>
 <td>9</td>
 <td><strong>Simple visualisation</strong></td>
 <td>Where useful, the result may be shown as an approved chart or table.</td>
-<td>✅ Implemented</td>
 </tr>
 <tr>
 <td>10</td>
 <td><strong>Safe failure handling</strong></td>
 <td>Model, data and agent failures must not crash the user experience.</td>
-<td>✅ Implemented</td>
 </tr>
 <tr>
 <td>11</td>
 <td><strong>Traceability</strong></td>
 <td>AI requests should be traceable for debugging, support and evaluation.</td>
-<td>✅ Implemented</td>
 </tr>
 <tr>
 <td>12</td>
 <td><strong>Quality evaluation</strong></td>
 <td>Agent responses should be tested against known-correct expected outcomes.</td>
-<td>✅ Framework implemented</td>
 </tr>
 <tr>
 <td>13</td>
 <td><strong>Scope control</strong></td>
 <td>Unsupported, destructive, individual-level, non-demographic, predictive or inappropriate requests should be rejected or constrained.</td>
-<td>✅ Prompt and code controls implemented</td>
 </tr>
 </tbody>
 </table>
@@ -564,27 +550,6 @@ For failed or unexpected evaluations, the LangSmith trace should be reviewed to 
 - result interpretation
 - answer wording
 
-## Production test expansion
-
-Before full production release, Demografy should add:
-
-- unit tests for RBAC and SQL guards
-- authentication and authorization tests
-- prompt injection tests
-- integration tests against a controlled non-production dataset
-- frontend regression tests
-- malformed and ambiguous question tests
-- empty-result tests
-- model outage simulation
-- BigQuery outage simulation
-- rate-limit handling tests
-- concurrency and performance tests
-- privacy and logging tests
-- regression evaluation for every prompt or model change
-
-The 10-question Golden Dataset is a useful baseline, not sufficient evidence of general production accuracy on its own.
-
----
 
 # Monitoring and traceability
 
@@ -622,156 +587,6 @@ flowchart LR
     L --> E
 ```
 
-## Production monitoring recommendations
-
-LangSmith should be part of the observability solution, but not the only operational monitoring mechanism.
-
-Demografy should monitor:
-
-<table>
-<thead>
-<tr>
-<th>Area</th>
-<th>Recommended metrics</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>Availability</strong></td>
-<td>Request count, successful request rate, failure rate, dependency failures</td>
-</tr>
-<tr>
-<td><strong>Performance</strong></td>
-<td>Average latency, p50, p95, p99, BigQuery execution time, model response time</td>
-</tr>
-<tr>
-<td><strong>AI quality</strong></td>
-<td>Evaluation pass rate, unsupported-question rate, refusal rate, trace review findings</td>
-</tr>
-<tr>
-<td><strong>Data safety</strong></td>
-<td>Rejected SQL, disallowed table attempts, prompt-injection detections</td>
-</tr>
-<tr>
-<td><strong>Cost</strong></td>
-<td>Gemini usage, BigQuery bytes processed, cost per successful question</td>
-</tr>
-<tr>
-<td><strong>Customer usage</strong></td>
-<td>Questions per tier, quota exhaustion, feature adoption, common request types</td>
-</tr>
-<tr>
-<td><strong>Change traceability</strong></td>
-<td>Application version, prompt version, model version, evaluation baseline version</td>
-</tr>
-</tbody>
-</table>
-
-Production logs and trace retention should also be reviewed against Demografy's privacy and data-retention requirements.
-
----
-
-# Recommendation for Demografy production intake
-
-The current implementation should be treated as a strong **production candidate**, but not deployed to customers unchanged.
-
-A controlled intake path is recommended.
-
-## Production intake gates
-
-<table>
-<thead>
-<tr>
-<th>Gate</th>
-<th>Required outcome</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>1. Functional readiness</strong></td>
-<td>Core question, SQL, data, answer, chart and quota flows operate reliably in an integrated test environment.</td>
-</tr>
-<tr>
-<td><strong>2. Security readiness</strong></td>
-<td>Least-privilege BigQuery access, guarded SQL execution, identity integration, secret management and customer-data separation are independently verified.</td>
-</tr>
-<tr>
-<td><strong>3. Quality readiness</strong></td>
-<td>The automated evaluator is corrected/validated, the Golden Dataset is expanded and measurable acceptance thresholds are agreed.</td>
-</tr>
-<tr>
-<td><strong>4. Platform integration</strong></td>
-<td>The agent is placed behind a controlled Demografy service/API boundary and integrated with production authentication and entitlement.</td>
-</tr>
-<tr>
-<td><strong>5. Operational readiness</strong></td>
-<td>Monitoring, alerting, CI/CD, environment separation, rollback, support ownership and incident procedures are established.</td>
-</tr>
-<tr>
-<td><strong>6. Controlled pilot</strong></td>
-<td>A limited pilot validates answer quality, usefulness, latency, stability, cost and support demand before wider rollout.</td>
-</tr>
-</tbody>
-</table>
-
-## Recommended production architecture
-
-```mermaid
-flowchart LR
-
-    USER["Demografy Customer"]
-    WEB["Demografy Web Application"]
-    IDP["Production Authentication"]
-    API["Insights API / Service"]
-    ENT["Entitlement & Usage Service"]
-    AGENT["Demografy Insight Agent"]
-    MODEL["Gemini"]
-    GUARD["SQL Safety Layer"]
-    BQ["BigQuery<br/>Approved Demographic View"]
-    OBS["Operational Logs / Metrics"]
-    LS["LangSmith / AI Tracing"]
-
-    USER --> WEB
-    WEB --> IDP
-    IDP --> WEB
-
-    WEB --> API
-    API --> ENT
-    ENT --> API
-
-    API --> AGENT
-    AGENT --> MODEL
-    AGENT --> GUARD
-    GUARD --> BQ
-
-    API --> OBS
-    AGENT --> OBS
-    AGENT --> LS
-    GUARD --> OBS
-```
-
-### Recommended role of Streamlit
-
-The current Streamlit application is valuable as:
-
-- a developer harness
-- a QA environment
-- a demonstration interface
-- an internal support/debugging tool
-
-For production customer access, Demografy's existing frontend should preferably call the insight capability through a controlled backend/API service.
-
-This separates the customer UI from:
-
-- AI orchestration
-- database permissions
-- secrets
-- usage enforcement
-- monitoring
-- model configuration
-- release management
-
----
 
 # Suggested next steps
 
