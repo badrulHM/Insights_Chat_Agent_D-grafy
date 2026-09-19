@@ -516,11 +516,3 @@ The Demografy Insights Chat Agent demonstrates how a conversational AI capabilit
 The feature allows a user to ask demographic questions in plain English and receive answers based on approved Demografy data, with supporting controls for customer access, testing and traceability.
 
 The next phase should focus on validating quality, integrating the feature into the Demografy platform and preparing it for a controlled production pilot.
-
-<div align="center">
-
-### Demografy Insights Chat Agent
-
-**From demographic question to clear demographic insight.**
-
-</div>
