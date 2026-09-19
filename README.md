@@ -432,8 +432,6 @@ Insights_Chat_Agent_D-grafy/
     └── data_profile.md           # Generated data profile, gitignored
 ```
 
-> The tree above is the presentation-level project structure requested for this README. Supporting implementation files may also exist in the repository.
-
 ---
 
 # Technology stack
