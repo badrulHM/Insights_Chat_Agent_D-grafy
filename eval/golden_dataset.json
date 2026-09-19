@@ -1,30 +1,64 @@
 [
   {
     "id": "GD01",
+    "category": "single_kpi_lookup",
     "question": "What is the prosperity score for Glenwood?",
     "expected_kpi": "Prosperity Score",
     "expected_column": "kpi_1_val",
-    "expected_geography": ["Glenwood"],
-    "expected_answer": "The prosperity score for Glenwood is 58.44."
+    "expected_geography": [
+      "Glenwood"
+    ],
+    "expect_sql": true,
+    "expected_values": [
+      {
+        "label": "Glenwood prosperity score",
+        "value": 58.4416,
+        "tolerance_pct": 1.0
+      }
+    ],
+    "expected_answer": "The prosperity score for Glenwood is approximately 58.44."
   },
   {
     "id": "GD02",
+    "category": "single_kpi_lookup",
     "question": "What is the diversity index for Glenwood?",
     "expected_kpi": "Diversity Index",
     "expected_column": "kpi_2_val",
-    "expected_geography": ["Glenwood"],
+    "expected_geography": [
+      "Glenwood"
+    ],
+    "expect_sql": true,
+    "expected_values": [
+      {
+        "label": "Glenwood diversity index",
+        "value": 0.80665,
+        "tolerance_pct": 1.0
+      }
+    ],
     "expected_answer": "The diversity index for Glenwood is approximately 0.807."
   },
   {
     "id": "GD03",
+    "category": "single_kpi_lookup",
     "question": "What is the resident equity score for Glenwood?",
     "expected_kpi": "Resident Equity",
     "expected_column": "kpi_6_val",
-    "expected_geography": ["Glenwood"],
-    "expected_answer": "The resident equity score for Glenwood is approximately 78.67%."
+    "expected_geography": [
+      "Glenwood"
+    ],
+    "expect_sql": true,
+    "expected_values": [
+      {
+        "label": "Glenwood resident equity",
+        "value": 78.6667,
+        "tolerance_pct": 1.0
+      }
+    ],
+    "expected_answer": "Glenwood's Resident Equity value is approximately 78.67%."
   },
   {
     "id": "GD04",
+    "category": "geography_comparison",
     "question": "Compare the diversity index of Glenwood and Karabar.",
     "expected_kpi": "Diversity Index",
     "expected_column": "kpi_2_val",
@@ -32,10 +66,24 @@
       "Glenwood",
       "Karabar"
     ],
+    "expect_sql": true,
+    "expected_values": [
+      {
+        "label": "Glenwood diversity index",
+        "value": 0.80665,
+        "tolerance_pct": 1.0
+      },
+      {
+        "label": "Karabar diversity index",
+        "value": 0.721,
+        "tolerance_pct": 1.0
+      }
+    ],
     "expected_answer": "Glenwood has a diversity index of approximately 0.807, compared with approximately 0.721 for Karabar."
   },
   {
     "id": "GD05",
+    "category": "geography_comparison",
     "question": "Compare prosperity in Glenwood and Karabar.",
     "expected_kpi": "Prosperity Score",
     "expected_column": "kpi_1_val",
@@ -43,18 +91,44 @@
       "Glenwood",
       "Karabar"
     ],
+    "expect_sql": true,
+    "expected_values": [
+      {
+        "label": "Glenwood prosperity score",
+        "value": 58.4416,
+        "tolerance_pct": 1.0
+      },
+      {
+        "label": "Karabar prosperity score",
+        "value": 23.18,
+        "tolerance_pct": 1.0
+      }
+    ],
     "expected_answer": "Glenwood has a prosperity score of approximately 58.44, compared with approximately 23.18 for Karabar."
   },
   {
     "id": "GD06",
+    "category": "population_lookup",
     "question": "What is the population of Glenwood?",
     "expected_kpi": "Population",
     "expected_column": "population",
-    "expected_geography": ["Glenwood"],
+    "expected_geography": [
+      "Glenwood"
+    ],
+    "expect_sql": true,
+    "expected_values": [
+      {
+        "label": "Glenwood population",
+        "value": 15829,
+        "tolerance_pct": 0.0,
+        "tolerance_abs": 0.0
+      }
+    ],
     "expected_answer": "The population of Glenwood is 15,829."
   },
   {
     "id": "GD07",
+    "category": "comparison_with_winner",
     "question": "Which has the higher diversity index, Glenwood or Karabar?",
     "expected_kpi": "Diversity Index",
     "expected_column": "kpi_2_val",
@@ -62,30 +136,84 @@
       "Glenwood",
       "Karabar"
     ],
+    "expect_sql": true,
+    "expected_values": [
+      {
+        "label": "Glenwood diversity index",
+        "value": 0.80665,
+        "tolerance_pct": 1.0
+      },
+      {
+        "label": "Karabar diversity index",
+        "value": 0.721,
+        "tolerance_pct": 1.0
+      }
+    ],
+    "required_answer_terms": [
+      "Glenwood"
+    ],
     "expected_answer": "Glenwood has the higher diversity index at approximately 0.807, compared with approximately 0.721 for Karabar."
   },
   {
     "id": "GD08",
+    "category": "natural_language_kpi_mapping",
     "question": "How affordable is renting in Glenwood?",
     "expected_kpi": "Rental Access",
     "expected_column": "kpi_7_val",
-    "expected_geography": ["Glenwood"],
-    "expected_answer": "Glenwood's Rental Access value is approximately 7.30%, meaning about 7.30% of dwellings are renting below $450 per week."
+    "expected_geography": [
+      "Glenwood"
+    ],
+    "expect_sql": true,
+    "expected_values": [
+      {
+        "label": "Glenwood Rental Access",
+        "value": 7.2976,
+        "tolerance_pct": 1.0
+      }
+    ],
+    "expected_answer": "Glenwood's Rental Access value is approximately 7.30%, representing the share of dwellings renting below $450 per week."
   },
   {
     "id": "GD09",
-    "question": "How suitable is Glenwood for young families?",
+    "category": "natural_language_kpi_mapping",
+    "question": "What percentage of Glenwood's population is aged 0 to 14?",
     "expected_kpi": "Young Family Indicator",
     "expected_column": "kpi_10_val",
-    "expected_geography": ["Glenwood"],
-    "expected_answer": "Glenwood's Young Family Indicator is approximately 20.92%, meaning about 20.92% of the population is aged 0 to 14."
+    "expected_geography": [
+      "Glenwood"
+    ],
+    "expect_sql": true,
+    "expected_values": [
+      {
+        "label": "Glenwood Young Family Indicator",
+        "value": 20.9173,
+        "tolerance_pct": 1.0
+      }
+    ],
+    "expected_answer": "Approximately 20.92% of Glenwood's population is aged 0 to 14, which is the Young Family Indicator."
   },
   {
     "id": "GD10",
+    "category": "undocumented_kpi",
     "question": "What does kpi_13 measure?",
-    "expected_kpi": "Unsupported",
-    "expected_column": "kpi_13_val",
+    "expected_kpi": "Undocumented KPI",
+    "expected_column": null,
     "expected_geography": [],
-    "expected_answer": "The kpi_13_val column exists in the data source, but its business meaning is not defined in the available Demografy data dictionary."
+    "expect_sql": false,
+    "expected_values": [],
+    "required_any_terms": [
+      [
+        "kpi_13",
+        "kpi_13_val"
+      ],
+      [
+        "no published definition",
+        "definition is unavailable",
+        "not defined",
+        "definition is not available",
+        "business meaning is not defined"
+      ]
+    ],
+    "expected_answer": "The kpi_13_val column exists, but its business meaning is not defined in the available Demografy data dictionary."
   }
 ]

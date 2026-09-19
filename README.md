@@ -230,363 +230,134 @@ The agent should not:
 
 # Solution architecture
 
-<div align="center">
-
-**Current logical architecture**
-
-</div>
+The proposed feature adds a conversational layer over Demografy's existing demographic data.
 
 ```mermaid
-flowchart TB
-
+flowchart LR
     USER["Demografy User"]
-
-    subgraph PRESENTATION["Presentation Layer"]
-        UI["Streamlit Chat UI<br/>Prototype Harness"]
-        VIS["Plotly / Table Renderer"]
-    end
-
-    subgraph ACCESS["Access & Entitlement"]
-        AUTH["User Lookup"]
-        RBAC["RBAC / Tier Policy"]
-        QUOTA["Session Quota"]
-    end
-
-    subgraph APP["Application Layer"]
-        SERVICE["agent.service"]
-        ERR["Error Classification"]
-        CHART["Chart Selection"]
-    end
-
-    subgraph AI["AI Orchestration"]
-        AGENT["LangChain Agent"]
-        GEMINI["Google Gemini"]
-        TOOLKIT["SQLDatabaseToolkit<br/>Schema / Query Checking Tools"]
-        SAFE["Guarded SQL Query Tool"]
-    end
-
-    subgraph DATA["Demografy Data Layer"]
-        BQ["Google BigQuery"]
-        MASTER["Demographic Master View"]
-        CUSTOMER["Customer / Tier Reference Table"]
-    end
-
-    subgraph QA["Observability & QA"]
-        LANGSMITH["LangSmith"]
-        GOLDEN["10-question Golden Dataset"]
-        EVAL["Automated Evaluation Runner"]
-    end
+    UI["Demografy / Chat Interface"]
+    AGENT["Insights Chat Agent"]
+    MODEL["Google Gemini"]
+    DATA["Demografy Data<br/>Google BigQuery"]
+    OBS["Monitoring & Traceability"]
 
     USER --> UI
-
-    UI --> AUTH
-    AUTH --> CUSTOMER
-    AUTH --> RBAC
-    RBAC --> QUOTA
-    QUOTA --> UI
-
-    UI --> SERVICE
-    SERVICE --> AGENT
-    SERVICE --> ERR
-    SERVICE --> CHART
-
-    AGENT --> GEMINI
-    AGENT --> TOOLKIT
-    AGENT --> SAFE
-
-    SAFE --> BQ
-    BQ --> MASTER
-
-    CHART --> VIS
-    VIS --> UI
-
-    SERVICE --> LANGSMITH
-    GOLDEN --> EVAL
-    EVAL --> SERVICE
-    EVAL --> LANGSMITH
+    UI --> AGENT
+    AGENT --> MODEL
+    AGENT --> DATA
+    AGENT --> UI
+    AGENT --> OBS
 ```
 
-## Architecture design principles
+At a high level, the solution:
 
-<table>
-<tr>
-<td width="25%"><strong>Separation of concerns</strong></td>
-<td>The Streamlit UI calls the application service. It does not need to understand LangChain internals.</td>
-</tr>
-<tr>
-<td><strong>Customer data separation</strong></td>
-<td>User entitlement is resolved outside the AI agent. Customer records are not intended to be exposed as an AI-queryable source.</td>
-</tr>
-<tr>
-<td><strong>Guarded SQL execution</strong></td>
-<td>The standard SQL query execution tool is replaced by a guarded tool that routes AI-generated SQL through the application's BigQuery safety controls.</td>
-</tr>
-<tr>
-<td><strong>Text-first experience</strong></td>
-<td>The primary answer is text. A chart or table is supplementary where the data shape benefits from visualisation.</td>
-</tr>
-<tr>
-<td><strong>Traceable execution</strong></td>
-<td>Agent requests can carry metadata and LangSmith traces to support debugging and evaluation.</td>
-</tr>
-</table>
+- receives a demographic question in plain English
+- interprets the requested KPI and geography
+- queries approved Demografy data
+- returns a clear text response, with a chart or table where appropriate
+- captures trace information to support testing and troubleshooting
 
 ---
 
 # RBAC and customer entitlements
 
-The prototype supports three customer tiers.
+The prototype includes tier-based access controls so the feature can support different customer plans.
 
 <table>
 <thead>
 <tr>
 <th>Tier</th>
 <th>Questions per session</th>
-<th>Warning threshold</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><strong>Free</strong></td>
 <td>5</td>
-<td>Not required</td>
 </tr>
 <tr>
 <td><strong>Basic</strong></td>
 <td>20</td>
-<td>15</td>
 </tr>
 <tr>
 <td><strong>Pro</strong></td>
 <td>50</td>
-<td>45</td>
 </tr>
 </tbody>
 </table>
 
-### Prototype RBAC flow
-
-```mermaid
-sequenceDiagram
-    actor U as User
-    participant UI as Streamlit UI
-    participant A as Auth / RBAC
-    participant C as Customer Table
-    participant S as agent.service
-
-    U->>UI: Enter user ID
-    UI->>A: authenticate(user_id)
-    A->>C: Parameterised customer lookup
-    C-->>A: Active status + tier
-    A-->>UI: Authenticated user
-    UI->>UI: Create SessionQuota(tier)
-
-    U->>UI: Ask question
-    UI->>UI: Check quota
-    UI->>S: ask(question, user_id, tier)
-    S-->>UI: Answer / result status
-
-    alt Successful answer
-        UI->>UI: Consume 1 question
-    else Failed execution
-        UI->>UI: Do not consume quota
-    end
-```
-
-### Production recommendation for RBAC
-
-For Demografy production, the current user ID sign-in should be replaced by the platform's existing authentication and identity mechanism.
-
-The production application should receive a trusted authenticated customer identity and entitlement from the Demografy platform rather than accepting an arbitrary user ID from the browser.
-
-If usage limits form part of customer billing or subscription entitlement, quota consumption should be persisted server-side rather than existing only in Streamlit session state.
+The user's tier is checked before access is provided, and the applicable question limit is applied for the session.
 
 ---
 
 # Data and SQL safety
 
-The solution uses multiple controls rather than relying only on model instructions.
+The solution includes controls to keep AI-generated data access within the intended Demografy scope.
 
-### 1. Restricted schema exposure
+Key controls include:
 
-The agent's SQL database configuration exposes the approved demographic master view for AI schema introspection.
+- read-only data access
+- restriction to approved demographic data
+- protection against destructive SQL operations
+- separation of customer entitlement data from the AI query path
+- limits on query size, results and execution time
+- least-privilege access recommended for production deployment
 
-### 2. Guarded query execution
-
-The standard LangChain `sql_db_query` execution tool is replaced with a guarded implementation before the agent is created.
-
-The guarded path routes model-generated SQL through application controls before execution.
-
-### 3. Read-only SQL controls
-
-The BigQuery layer is designed to reject destructive operations such as:
-
-```text
-INSERT
-UPDATE
-DELETE
-DROP
-ALTER
-CREATE
-MERGE
-TRUNCATE
-```
-
-### 4. Allowed-table enforcement
-
-AI-generated queries are restricted to the demographic master view.
-
-The customer / tier reference table belongs to the authentication path and should not be available to the AI agent.
-
-### 5. Parameterised customer lookup
-
-Customer identifiers should be supplied to BigQuery as parameters rather than interpolated into SQL text.
-
-### 6. Query cost and result controls
-
-Production should retain limits such as:
-
-- maximum result rows
-- timeout
-- maximum bytes billed
-- fully qualified table requirements
-- least-privilege BigQuery IAM
-
-> **Design principle:** Prompt instructions are useful behaviour guidance, but security-critical restrictions should also be enforced in code and infrastructure.
+These controls are designed to ensure the chat experience can retrieve demographic information without allowing the AI agent unrestricted database access.
 
 ---
 
 # Testing approach
 
-The solution uses several layers of testing because a conversational data agent can fail in different ways.
+Testing is designed to confirm that the feature returns the correct demographic insight and behaves safely when a request is unsupported or fails.
 
-## Test strategy
+<table>
+<thead>
+<tr>
+<th>Testing area</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Connection testing</strong></td>
+<td>Confirms required services such as BigQuery, Gemini and tracing are available.</td>
+</tr>
+<tr>
+<td><strong>Golden Dataset</strong></td>
+<td>Uses 10 known questions and expected answers to test common demographic scenarios.</td>
+</tr>
+<tr>
+<td><strong>Answer evaluation</strong></td>
+<td>Checks the KPI, geography, result and quality of the final response.</td>
+</tr>
+<tr>
+<td><strong>Safety and error testing</strong></td>
+<td>Confirms unsupported requests, invalid queries and service failures are handled safely.</td>
+</tr>
+</tbody>
+</table>
 
-```mermaid
-flowchart LR
+The Golden Dataset provides a repeatable baseline for regression testing as the agent, prompt or model is changed.
 
-    A["1. Connection &<br/>Configuration Smoke Tests"]
-    B["2. Scope &<br/>Security Guard Tests"]
-    C["3. Golden Dataset<br/>Deterministic Checks"]
-    D["4. LLM-as-Judge<br/>Quality Signal"]
-    E["5. LangSmith<br/>Trace Review"]
-    F["6. UI / UAT /<br/>Production Pilot"]
-
-    A --> B --> C --> D --> E --> F
-```
-
-## 1. Connection and configuration smoke testing
-
-`scripts/check_connections.py` is used to validate the key runtime dependencies before functional testing.
-
-Typical checks include:
-
-- environment configuration
-- BigQuery connectivity
-- access to the approved data source
-- Gemini connectivity
-- LangSmith configuration
-- agent creation
-- RBAC/customer lookup
-
-## 2. Scope and security testing
-
-Scope controls should be tested separately from answer quality.
-
-Examples include:
-
-- destructive SQL is rejected
-- unapproved tables cannot be queried
-- customer data cannot be exposed through the LLM
-- result limits are enforced
-- unsupported request types are refused
-- prompt injection does not bypass data restrictions
-
-## 3. Golden Dataset
-
-The repository includes a **10-question Golden Dataset** to provide repeatable baseline evaluation.
-
-The dataset is intended to cover representative scenarios such as:
-
-- a single KPI lookup
-- population lookup
-- KPI comparisons
-- geography comparisons
-- natural-language KPI aliases
-- rankings
-- unsupported KPI behaviour
-
-## 4. Deterministic evaluation
-
-Where possible, test results should be validated against objective ground truth.
-
-Checks may include:
-
-- expected KPI/data column
-- expected geography
-- expected numeric value or tolerance
-- expected ranking order
-- correct refusal behaviour
-
-Deterministic checks should remain the primary quality gate for data correctness.
-
-## 5. LLM-as-a-Judge
-
-A second model can score the user-facing answer against a known expected answer.
-
-This is useful for qualities that are harder to express as exact assertions, but should remain a **secondary signal**.
-
-> **Current review note:** Before the evaluation runner is used as a formal production quality gate, reconcile the current runner/judge interface and ensure the pass threshold uses the same scoring scale as the judge.
-
-## 6. Trace review
-
-For failed or unexpected evaluations, the LangSmith trace should be reviewed to determine whether the issue originated in:
-
-- question interpretation
-- KPI selection
-- geography selection
-- SQL generation
-- SQL execution
-- result interpretation
-- answer wording
-
+---
 
 # Monitoring and traceability
 
-LangSmith provides AI-agent traceability during development and evaluation.
+LangSmith is used to provide visibility into how the AI agent processes a question.
 
-A request can be associated with operational context such as:
+For supported runs, the solution can capture:
 
-- user identifier
-- customer tier
+- the user question
 - generated SQL
-- execution latency
-- tool activity
-- model interactions
-- result status
-- trace identifier
-- trace URL
+- execution time
+- agent and model activity
+- final response
+- trace information for troubleshooting
 
-### Traceability model
+This gives the development and QA team a practical way to investigate incorrect answers, failed queries and unexpected agent behaviour.
 
-```mermaid
-flowchart LR
-
-    Q["User Question"]
-    R["Application Run ID"]
-    L["LangSmith Trace"]
-    SQL["Generated SQL"]
-    BQ["BigQuery Execution"]
-    A["Final Answer"]
-    E["Evaluation / Support Review"]
-
-    Q --> R --> L
-    L --> SQL --> BQ --> A
-    L --> A
-    A --> E
-    L --> E
-```
-
+---
 
 # Suggested next steps
 
@@ -594,80 +365,33 @@ flowchart LR
 <thead>
 <tr>
 <th>Priority</th>
-<th>Activity</th>
-<th>Outcome</th>
+<th>Next step</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><strong>P0</strong></td>
-<td>Validate and correct the automated evaluation runner/judge interface and scoring threshold.</td>
-<td>Reliable regression results can be used as a release gate.</td>
+<td><strong>1</strong></td>
+<td>Complete and validate the automated evaluation suite.</td>
 </tr>
 <tr>
-<td><strong>P0</strong></td>
-<td>Run and evidence all SQL guard, table allow-list and scope tests.</td>
-<td>Security-critical controls are proven before customer access.</td>
+<td><strong>2</strong></td>
+<td>Expand the Golden Dataset to cover more customer questions and edge cases.</td>
 </tr>
 <tr>
-<td><strong>P0</strong></td>
-<td>Complete an end-to-end regression run using the current main branch.</td>
-<td>A clean technical baseline is established.</td>
+<td><strong>3</strong></td>
+<td>Integrate the feature with Demografy's existing authentication and customer experience.</td>
 </tr>
 <tr>
-<td><strong>P1</strong></td>
-<td>Integrate with Demografy's production authentication and entitlement model.</td>
-<td>Trusted customer identity replaces prototype user-ID sign-in.</td>
+<td><strong>4</strong></td>
+<td>Complete security, privacy and operational review.</td>
 </tr>
 <tr>
-<td><strong>P1</strong></td>
-<td>Persist usage/quota state if question limits are commercially significant.</td>
-<td>Usage limits remain reliable across browsers, sessions and deployments.</td>
+<td><strong>5</strong></td>
+<td>Set up production monitoring and deployment controls.</td>
 </tr>
 <tr>
-<td><strong>P1</strong></td>
-<td>Expand the Golden Dataset with ambiguous, negative, adversarial and edge cases.</td>
-<td>Regression coverage better reflects real customer behaviour.</td>
-</tr>
-<tr>
-<td><strong>P1</strong></td>
-<td>Add CI checks for unit tests, scope checks and evaluation thresholds.</td>
-<td>Unsafe or lower-quality changes are blocked before merge or deployment.</td>
-</tr>
-<tr>
-<td><strong>P1</strong></td>
-<td>Move production secrets to an approved secret-management service.</td>
-<td>Credentials are managed outside developer configuration files.</td>
-</tr>
-<tr>
-<td><strong>P2</strong></td>
-<td>Create Development, Test/UAT and Production environments.</td>
-<td>Changes can be tested and promoted through a controlled release lifecycle.</td>
-</tr>
-<tr>
-<td><strong>P2</strong></td>
-<td>Implement application metrics, dashboards and alerts alongside LangSmith.</td>
-<td>Operations teams can monitor availability, latency, cost and failures.</td>
-</tr>
-<tr>
-<td><strong>P2</strong></td>
-<td>Version prompts, model configuration and evaluation baselines.</td>
-<td>Every production answer can be associated with the behaviour configuration that produced it.</td>
-</tr>
-<tr>
-<td><strong>P2</strong></td>
-<td>Complete privacy, retention and support-readiness review.</td>
-<td>Operational ownership and data handling are clear before launch.</td>
-</tr>
-<tr>
-<td><strong>P3</strong></td>
-<td>Run a controlled production pilot.</td>
-<td>Real customer behaviour validates quality, usefulness, performance and cost.</td>
-</tr>
-<tr>
-<td><strong>P3</strong></td>
-<td>Use pilot findings to define the general-availability release gate.</td>
-<td>Wider rollout is evidence-based.</td>
+<td><strong>6</strong></td>
+<td>Run a controlled pilot before broader customer release.</td>
 </tr>
 </tbody>
 </table>
@@ -765,47 +489,19 @@ Insights_Chat_Agent_D-grafy/
 
 # Local development
 
-## 1. Create a virtual environment
-
 ```bash
 python -m venv .venv
-```
-
-Activate it using the command appropriate to your operating system.
-
-## 2. Install dependencies
-
-```bash
 pip install -r requirements.txt
 ```
 
-## 3. Create local configuration
-
-```bash
-cp .env.example .env
-```
-
-Populate the required BigQuery, Gemini and optional LangSmith settings.
-
-## 4. Authenticate to Google Cloud
-
-Use the approved local development authentication method for the environment.
-
-## 5. Run the connection checks
+Create the local environment configuration, authenticate to Google Cloud, then run:
 
 ```bash
 python -m scripts.check_connections
-```
-
-## 6. Start the prototype
-
-```bash
 streamlit run app.py
 ```
 
-## 7. Run the evaluation suite
-
-After validating the evaluator interface and scoring configuration:
+To run the evaluation suite:
 
 ```bash
 python -m eval.run_eval
@@ -813,115 +509,18 @@ python -m eval.run_eval
 
 ---
 
-# Example backend usage
-
-```python
-from agent.service import ask
-
-result = ask(
-    "Top 3 most diverse suburbs in Victoria",
-    user_id="user_001",
-    tier="pro",
-    with_data=True,
-)
-
-print(result.answer)
-print(result.sql)
-print(result.trace_url)
-```
-
-The application service is intended to provide the UI with a stable boundary for:
-
-- user-facing answer
-- generated SQL for QA/debugging
-- chart specification
-- result data where required
-- execution latency
-- trace information
-- stable error outcome
-
----
-
-# Production acceptance checklist
-
-<details>
-<summary><strong>Security & identity</strong></summary>
-
-- [ ] Production authentication integrated
-- [ ] Tier / entitlement comes from a trusted server-side identity
-- [ ] BigQuery service account uses least privilege
-- [ ] Customer table is unavailable to the AI query path
-- [ ] Guarded SQL execution has automated tests
-- [ ] Prompt-injection tests pass
-- [ ] Secrets are held in an approved secrets platform
-- [ ] Logging and traces meet privacy requirements
-
-</details>
-
-<details>
-<summary><strong>Quality</strong></summary>
-
-- [ ] Evaluation runner and judge interface validated
-- [ ] Judge scale and release threshold aligned
-- [ ] Expanded Golden Dataset approved
-- [ ] Deterministic correctness tests pass
-- [ ] Unsupported and adversarial tests pass
-- [ ] Regression baseline recorded
-- [ ] Prompt/model changes trigger evaluation automatically
-
-</details>
-
-<details>
-<summary><strong>Operations</strong></summary>
-
-- [ ] Dev, Test/UAT and Production environments exist
-- [ ] CI/CD pipeline established
-- [ ] Deployment rollback is documented and tested
-- [ ] Availability and latency dashboards exist
-- [ ] Error-rate and dependency alerts exist
-- [ ] Gemini and BigQuery cost monitoring exists
-- [ ] Support and incident ownership is assigned
-- [ ] Application, prompt and model versions are traceable
-
-</details>
-
-<details>
-<summary><strong>Customer release</strong></summary>
-
-- [ ] Controlled pilot group identified
-- [ ] Pilot success measures agreed
-- [ ] Customer feedback captured
-- [ ] Common unsupported questions analysed
-- [ ] Cost per successful question understood
-- [ ] General-availability release criteria approved
-
-</details>
-
----
-
 # Summary
 
-The Demografy Insights Chat Agent demonstrates a practical conversational interface over Demografy's structured demographic data.
+The Demografy Insights Chat Agent demonstrates how a conversational AI capability could be added to Demografy.com.au.
 
-The solution already contains the principal building blocks:
+The feature allows a user to ask demographic questions in plain English and receive answers based on approved Demografy data, with supporting controls for customer access, testing and traceability.
 
-- natural-language demographic querying
-- KPI and geography-aware SQL generation
-- guarded BigQuery execution
-- customer tier and quota controls
-- text answers with optional charts and tables
-- stable error handling
-- LangSmith tracing
-- Golden Dataset evaluation assets
-
-The recommended focus is now **production hardening and platform integration**.
-
-The most important next steps are to validate the automated evaluation path, complete production identity and entitlement integration, expand the regression suite, establish operational monitoring and deploy through a controlled pilot before broader customer release.
+The next phase should focus on validating quality, integrating the feature into the Demografy platform and preparing it for a controlled production pilot.
 
 <div align="center">
 
 ### Demografy Insights Chat Agent
 
-**From demographic question to controlled, traceable insight.**
+**From demographic question to clear demographic insight.**
 
 </div>
