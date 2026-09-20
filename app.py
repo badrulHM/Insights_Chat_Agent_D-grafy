@@ -2961,8 +2961,8 @@ def show_login():
             st.html(
                 """
                 <div class="login-note">
-                    Your access level and question allowance
-                    are determined by your Demografy account.
+                    Your access and question allowance
+                    are determined by your Demografy subscription.
                 </div>
                 """
             )
